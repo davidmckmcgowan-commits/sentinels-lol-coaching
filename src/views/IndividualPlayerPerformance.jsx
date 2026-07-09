@@ -183,15 +183,17 @@ function SessionTypeChart({ rows }) {
   )
 
   const totalScrimRows = rows.filter((r) => r.seriesType === 'SCRIM').length
-  const matchRate = totalScrimRows > 0 ? Math.round((matchedRows.length / totalScrimRows) * 1000) / 10 : 0
+  const matchedScrimRows = rows.filter((r) => r.seriesType === 'SCRIM' && r.sessionTypeLabel && !r.sessionTypeAmbiguous).length
+  const matchRate = totalScrimRows > 0 ? Math.round((matchedScrimRows / totalScrimRows) * 1000) / 10 : 0
+  const officialRows = rows.filter((r) => r.seriesType === 'ESPORTS').length
 
   return (
     <>
       <div className="flag-banner amber">
-        Only {matchedRows.length} of {totalScrimRows} SCRIM games for this player ({matchRate}%) could be
-        matched to a Green/Orange/Red/Official label — GRID has no session id, so this is a date join
-        against the sessions table, and most scrim dates aren&rsquo;t in both places. The rest are excluded
-        here rather than guessed.
+        Official is taken directly from GRID&rsquo;s own ESPORTS flag for this player ({officialRows} games) —
+        no date join needed, so it can&rsquo;t be missed by a gap in the sessions sheet. Green/Orange/Red still
+        relies on a date join for SCRIM games only: {matchedScrimRows} of {totalScrimRows} SCRIM games ({matchRate}%)
+        matched to a practice-type label. The rest are excluded here rather than guessed.
       </div>
       <div className="chart-wrap">
         {data.length === 0 ? (
@@ -390,14 +392,28 @@ export default function IndividualPlayerPerformance() {
             <h2>Coverage Caveats</h2>
             <ul style={{ margin: 0, paddingLeft: 18, color: 'var(--text-dim)', fontSize: 13, lineHeight: 1.6 }}>
               <li>
-                GRID series-type is SCRIM/ESPORTS only. Green/Orange/Red/Official comes from a date join to
-                the sessions table with roughly 13% overall match coverage (93 of 706 GRID series dates) —
-                most scrim dates simply aren&rsquo;t in both places, so the Green/Orange/Red/Official chart
-                above will show a smaller n than SCRIM vs ESPORTS.
+                Updated 2026-07-09 after auditing against Leaguepedia&rsquo;s Sentinels match history: Official
+                is now taken directly from GRID&rsquo;s own ESPORTS flag rather than a date join, so it&rsquo;s
+                never affected by gaps in the internal sessions sheet. The audit found 4 real official matches
+                (2026-02-01 vs Dignitas, 2026-03-07 vs Cloud9 Kia, 2026-05-17 vs Dignitas, 2026-05-30 vs
+                FlyQuest) that exist in GRID and on Leaguepedia but had zero row in the internal sessions
+                table — those games are now correctly included as Official here. It also found ~15 dates
+                where a GRID scrim and an internal Official session against a different opponent fell on the
+                same calendar day; those no longer bleed the Official label onto scrim games, since Official
+                never touches the date join anymore.
               </li>
               <li>
-                A few matched dates had more than one session_type logged (e.g. Green then Orange same day)
-                and are excluded from the Green/Orange/Red/Official chart as ambiguous rather than guessed.
+                Green/Orange/Red (practice sub-type) still relies on a date join to the sessions table for
+                SCRIM games only, and coverage there is partial — most scrim dates simply aren&rsquo;t logged
+                internally with enough detail to match. A few matched scrim dates had more than one type
+                logged (e.g. Green then Orange same day) and are excluded as ambiguous rather than guessed.
+              </li>
+              <li>
+                Separately (not fixable from this view): the internal sessions sheet&rsquo;s result for
+                2026-04-18 vs FlyQuest is wrong — logged as 3 losses, but GRID and Leaguepedia both confirm
+                Sentinels won that series 2-1. Doesn&rsquo;t affect the KDA/kill-participation numbers here
+                (those come from GRID&rsquo;s own per-game result), but the Monitoring Master Sheet&rsquo;s
+                team W-L record needs a manual correction.
               </li>
               <li>
                 ESPORTS sample size is small across the whole roster (28 series total, since this roster

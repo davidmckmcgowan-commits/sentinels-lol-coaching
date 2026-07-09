@@ -4,12 +4,35 @@
 // Important limitations, surfaced in the UI rather than hidden here:
 // - GRID only distinguishes SCRIM vs ESPORTS natively. Green/Orange/Red/Official
 //   is an internal classification that lives in the `sessions` table and has to be
-//   joined by date (loose join — GRID has no session id to key off of). Only dates
-//   that exist in both tables get a Green/Orange/Red/Official label; the rest are
-//   left unlabeled rather than guessed.
-// - A handful of dates have more than one session_type logged (e.g. a Green
-//   practice block and a later Red sim same day). Those are labeled "Mixed" rather
-//   than arbitrarily picking one.
+//   joined by date (loose join — GRID has no session id to key off of).
+// - AUDIT FINDING (2026-07-09, cross-checked against Leaguepedia's Sentinels match
+//   history): the internal `sessions` sheet and GRID disagree on official-match
+//   dates often enough that a plain date-only join mislabels games. Confirmed via
+//   Leaguepedia: (a) 4 real official matches (2026-02-01 vs Dignitas, 2026-03-07 vs
+//   Cloud9 Kia, 2026-05-17 vs Dignitas, 2026-05-30 vs FlyQuest) exist in GRID as
+//   ESPORTS series but have ZERO row in the internal sessions table at all; (b) at
+//   least ~15 dates have a GRID SCRIM series and an internal "Official" session on
+//   the same calendar day against a DIFFERENT opponent (genuine same-day scrim +
+//   official, not a data error) — a naive date join would mislabel the scrim games
+//   as Official on those dates; (c) GRID's own series_date is itself off by one day
+//   from the true match date in at least 2 known spots (2026-01-24→GRID's 01-25 vs
+//   Disguised, 2026-03-04→GRID's 03-05 vs RED Canids), confirmed by Leaguepedia
+//   agreeing with the internal sheet's earlier date in both cases.
+// - FIX: GRID's own series_type is now treated as authoritative for the
+//   stage-vs-practice distinction. Any GRID ESPORTS series is labeled "Official"
+//   directly — no date lookup, so it can never be missed just because the internal
+//   sessions sheet has a gap that day. Only SCRIM games consult the internal
+//   sessions table, and only among Green/Orange/Red rows (Official is excluded from
+//   that lookup entirely), so a same-day official match with a different opponent
+//   can no longer bleed its label onto scrim games. A handful of SCRIM dates still
+//   have more than one Green/Orange/Red type logged same day; those are labeled
+//   "Mixed" rather than arbitrarily picking one.
+// - Separately, the internal sessions sheet's `result` column itself is wrong for
+//   2026-04-18 vs FlyQuest (logged as 3 losses; GRID + Leaguepedia both confirm
+//   Sentinels won that series 2-1). This doesn't affect the per-game GRID stats
+//   used here (which come from grid_games.sentinels_won, confirmed correct), but it
+//   does mean the internal Monitoring Master Sheet's team W-L record needs a manual
+//   correction — flag to David, not fixable from this file.
 // - Per A-R4, champion is attached to every row. Do not compare KDA/net worth
 //   across different champions as if they were the same baseline.
 // - Per A-R1, each player is their own control — these helpers never rank or
@@ -18,12 +41,17 @@
 import { rollingAveragesAsOf } from './sleepDebt.js'
 
 // Build a map of session_date -> { label, types } from raw `sessions` rows.
+// Only Green/Orange/Red rows are considered — Official is intentionally excluded
+// here because GRID's own ESPORTS flag now handles the Official label directly
+// (see file header). Feeding Official rows into this map was the root cause of
+// same-day scrim+official conflicts bleeding the wrong label onto scrim games.
 // label is the single session_type if unambiguous, or "Mixed (A+B)" if more than
-// one distinct type was logged on that date.
+// one distinct practice type was logged on that date.
 export function buildSessionTypeByDate(sessionRows) {
   const byDate = {}
   for (const s of sessionRows) {
     if (!s.session_date || !s.session_type) continue
+    if (s.session_type === 'Official') continue // handled via GRID series_type instead
     if (!byDate[s.session_date]) byDate[s.session_date] = new Set()
     byDate[s.session_date].add(s.session_type)
   }
@@ -77,7 +105,14 @@ export function buildPlayerPerformanceSeries({ rawRows, player, sleepByPlayer, s
       const series = r.grid_games?.grid_series
       const date = series?.series_date ?? null
       const metrics = deriveGameMetrics(r)
-      const sessionInfo = date ? sessionTypeByDate[date] : undefined
+      const isEsports = series?.series_type === 'ESPORTS'
+      // GRID's own series_type is authoritative for Official — see file header.
+      // Only SCRIM games fall through to the internal Green/Orange/Red date lookup.
+      const sessionInfo = isEsports
+        ? { label: 'Official', ambiguous: false }
+        : date
+          ? sessionTypeByDate[date]
+          : undefined
 
       let rollingAvg = null
       let rollingStale = null
