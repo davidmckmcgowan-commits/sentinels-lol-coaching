@@ -18,6 +18,16 @@ import {
   buildOpponentNetWorthByGameRole, attachNetWorthDiff, computePerformanceIndex,
   computeEnduranceByGameNumber, computeTiltRecovery,
 } from '../lib/performanceIndex.js'
+import {
+  computePotential, attachInterference, computeTdcsPatternFlags,
+} from '../lib/interference.js'
+
+const TAG_OPTIONS = [
+  { value: 'skill_gap', label: 'Skill / Knowledge Gap' },
+  { value: 'motivation', label: 'Motivation' },
+  { value: 'conflict', label: 'Conflict' },
+  { value: 'other', label: 'Other' },
+]
 
 const SESSION_TYPE_ORDER = ['Green', 'Orange', 'Red', 'Official']
 const TIER_ORDER = ['Tier 5', 'Tier 4', 'Tier 3', 'Tier 2', 'Tier 1', 'Unranked']
@@ -182,6 +192,170 @@ function IndexGroupChart({ rows, keyFn, sortOrder, color = '#5b8def', yLabel = '
   )
 }
 
+// ---- Interference by context (not mutually-exclusive buckets) -------------
+
+function InterferenceContextChart({ rows, tilt }) {
+  const data = useMemo(() => {
+    const withInt = rows.filter((r) => r.interference != null)
+    const bucket = (filterFn) => {
+      const vals = withInt.filter(filterFn).map((r) => r.interference)
+      const avg = average(vals)
+      return { avg: avg != null ? Math.round(avg * 10) / 10 : null, n: vals.length }
+    }
+    const out = [
+      { key: 'Scrim', ...bucket((r) => r.seriesType === 'SCRIM') },
+      { key: 'Official', ...bucket((r) => r.seriesType === 'ESPORTS') },
+      { key: 'Low Sleep <6.5h', ...bucket((r) => r.rollingAvgSleep != null && r.rollingAvgSleep < 6.5) },
+      { key: 'High Sleep 7.5h+', ...bucket((r) => r.rollingAvgSleep != null && r.rollingAvgSleep >= 7.5) },
+      { key: 'Game 1', ...bucket((r) => r.gameNumber === 1) },
+      { key: 'Game 3+', ...bucket((r) => r.gameNumber != null && r.gameNumber >= 3) },
+    ]
+    if (tilt && !tilt.insufficientData && tilt.avgIndexAfterBadGame != null && tilt.overallAvgIndex != null) {
+      out.push({
+        key: 'After Bad Game',
+        avg: Math.round((tilt.overallAvgIndex - tilt.avgIndexAfterBadGame) * 10) / 10,
+        n: tilt.recoverySampleSize,
+      })
+    }
+    return out.filter((d) => d.n > 0)
+  }, [rows, tilt])
+
+  if (data.length === 0) return <div className="empty-state">Not enough data yet for a context breakdown.</div>
+
+  return (
+    <div className="chart-wrap">
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={data} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#2a2f3a" />
+          <XAxis dataKey="key" stroke="#9aa1ae" fontSize={11} interval={0} angle={-20} textAnchor="end" height={55} />
+          <YAxis stroke="#9aa1ae" fontSize={12} label={{ value: 'Avg Interference', angle: -90, position: 'insideLeft', fill: '#676f7d', fontSize: 11 }} />
+          <ReferenceLine y={0} stroke="#676f7d" strokeDasharray="4 4" />
+          <Tooltip
+            contentStyle={{ background: '#171a21', border: '1px solid #2a2f3a', fontSize: 12 }}
+            formatter={(value, name, props) => [`${value} avg interference (n=${props.payload.n})`, 'Interference']}
+          />
+          <Bar dataKey="avg" radius={[4, 4, 0, 0]} fill="#e0524a">
+            <LabelList dataKey="avg" position="top" formatter={(v, i) => `${v} (n=${data[i]?.n ?? ''})`} fill="#e6e8ec" fontSize={11} />
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  )
+}
+
+// ---- Manual tagging for unexplained (residual) interference ---------------
+
+function InterferenceTaggingForm({ player, rows, existingTags, tagsLoading, tagsError, onTagged }) {
+  const candidates = useMemo(
+    () => rows
+      .filter((r) => r.interference != null)
+      .slice()
+      .sort((a, b) => b.interference - a.interference)
+      .slice(0, 30),
+    [rows]
+  )
+
+  const [selectedIdx, setSelectedIdx] = useState('')
+  const [tag, setTag] = useState('skill_gap')
+  const [note, setNote] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [status, setStatus] = useState(null) // 'success' | 'error'
+  const [msg, setMsg] = useState('')
+
+  async function submitTag(e) {
+    e.preventDefault()
+    setStatus(null)
+    if (selectedIdx === '') {
+      setStatus('error')
+      setMsg('Pick a game first.')
+      return
+    }
+    const row = candidates[Number(selectedIdx)]
+    setSubmitting(true)
+    const { error } = await supabase.from('interference_tags').insert({
+      player,
+      game_id: row.gameId,
+      game_date: row.date,
+      opponent_name: row.opponentName,
+      champion: row.champion,
+      performance_index: row.performanceIndex,
+      interference_amount: row.interference,
+      tag,
+      note: note.trim() || null,
+    })
+    setSubmitting(false)
+    if (error) {
+      setStatus('error')
+      setMsg(`Save failed: ${error.message}`)
+    } else {
+      setStatus('success')
+      setMsg('Tagged.')
+      setNote('')
+      setSelectedIdx('')
+      onTagged?.()
+    }
+  }
+
+  return (
+    <div>
+      <form onSubmit={submitTag} style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end', marginBottom: 14 }}>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--text-dim)', flex: '1 1 320px' }}>
+          Game (highest interference first)
+          <select value={selectedIdx} onChange={(e) => setSelectedIdx(e.target.value)}>
+            <option value="">Select a game…</option>
+            {candidates.map((r, i) => (
+              <option key={i} value={i}>
+                {formatDate(r.date)} vs {r.opponentName} ({r.champion}) — interference {r.interference}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--text-dim)' }}>
+          Cause
+          <select value={tag} onChange={(e) => setTag(e.target.value)}>
+            {TAG_OPTIONS.map((t) => (<option key={t.value} value={t.value}>{t.label}</option>))}
+          </select>
+        </label>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--text-dim)', flex: '1 1 260px' }}>
+          Note (optional)
+          <input type="text" value={note} onChange={(e) => setNote(e.target.value)} placeholder="What happened?" />
+        </label>
+        <button type="submit" className="primary" disabled={submitting}>{submitting ? 'Saving…' : 'Tag It'}</button>
+      </form>
+      {status === 'error' && <div className="toast error" style={{ marginBottom: 12 }}>{msg}</div>}
+      {status === 'success' && <div className="toast" style={{ marginBottom: 12 }}>{msg}</div>}
+
+      {tagsLoading ? (
+        <div className="loading-state">Loading tagged games…</div>
+      ) : tagsError ? (
+        <div className="toast error">Error loading tags: {tagsError.message}</div>
+      ) : !existingTags || existingTags.length === 0 ? (
+        <div className="empty-state">No games tagged for {player} yet.</div>
+      ) : (
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr><th>Date</th><th>Opponent</th><th>Champion</th><th>Interference</th><th>Cause</th><th>Note</th></tr>
+            </thead>
+            <tbody>
+              {existingTags.map((t) => (
+                <tr key={t.id}>
+                  <td>{formatDate(t.game_date)}</td>
+                  <td>{t.opponent_name}</td>
+                  <td>{t.champion}</td>
+                  <td>{t.interference_amount ?? '—'}</td>
+                  <td>{TAG_OPTIONS.find((o) => o.value === t.tag)?.label ?? t.tag}</td>
+                  <td>{t.note ?? '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function IndividualPlayerPerformance() {
   const [player, setPlayer] = useState(ROSTER_PLAYERS[0])
   const [sleepMode, setSleepMode] = useState('rolling') // 'rolling' | 'sameNight'
@@ -205,6 +379,11 @@ export default function IndividualPlayerPerformance() {
   const { data: sessions, error: sessError, loading: sessLoading } = useSupabaseQuery(
     () => supabase.from('sessions').select('session_date, session_type'),
     []
+  )
+
+  const { data: tagRows, error: tagError, loading: tagLoading, refetch: refetchTags } = useSupabaseQuery(
+    () => supabase.from('interference_tags').select('*').eq('player', player).order('created_at', { ascending: false }),
+    [player]
   )
 
   const sleepByPlayer = useMemo(() => (nightlyRows ? groupByPlayer(nightlyRows) : {}), [nightlyRows])
@@ -237,6 +416,16 @@ export default function IndividualPlayerPerformance() {
   const champBackedCount = scoredRows.filter((r) => r.baselineSource === 'champion').length
   const roleFallbackCount = scoredRows.filter((r) => r.baselineSource === 'role').length
   const unscoredCount = playerRows.length - scoredRows.length
+
+  const potential = useMemo(() => computePotential(scoredRows), [scoredRows])
+  const rowsWithInterference = useMemo(
+    () => attachInterference(playerRows, potential.potential),
+    [playerRows, potential.potential]
+  )
+  const tdcsPatterns = useMemo(
+    () => computeTdcsPatternFlags(rowsWithInterference.filter((r) => r.performanceIndex != null), tilt),
+    [rowsWithInterference, tilt]
+  )
 
   return (
     <div>
@@ -293,6 +482,74 @@ export default function IndividualPlayerPerformance() {
               {playerRows.length} dated games for {player} — {scoredRows.length} scored, {unscoredCount} not
               yet scored (still building a baseline).
             </p>
+          </div>
+
+          <div className="panel">
+            <h2>Interference — {player}</h2>
+            <p className="panel-caption">
+              Performance = Potential − Interference (Gallwey&rsquo;s Inner Game model). Potential is{' '}
+              {player}&rsquo;s own ceiling — the average Index across their own best scored games.
+              Interference per game is Potential minus that game&rsquo;s Index: how far below their own best
+              they fell, never a comparison to a teammate.
+            </p>
+            {potential.insufficientData ? (
+              <div className="empty-state">Not enough scored games yet to estimate Potential for {player} (need at least 5).</div>
+            ) : (
+              <>
+                <div className="stat-grid">
+                  <div className="stat-card">
+                    <div className="stat-label">Potential (P)</div>
+                    <div className="stat-value">{potential.potential}</div>
+                    <div className="stat-sub">avg of top {potential.topN} of {potential.n} scored games</div>
+                  </div>
+                  <div className="stat-card">
+                    <div className="stat-label">Avg Interference (I)</div>
+                    <div className="stat-value">{tdcsPatterns.overallAvgInterference ?? '—'}</div>
+                    <div className="stat-sub">Potential − Index, averaged across all scored games</div>
+                  </div>
+                </div>
+
+                <h3 style={{ fontSize: 14, marginTop: 20, marginBottom: 4 }}>Interference by Context</h3>
+                <p className="panel-caption">
+                  Where the Potential-minus-Performance gap concentrates. Contexts overlap (a game can be both
+                  Official and Low Sleep) — this is about where the gap shows up, not a precise split of one
+                  game&rsquo;s interference into percentages.
+                </p>
+                <InterferenceContextChart rows={rowsWithInterference} tilt={tilt} />
+
+                <h3 style={{ fontSize: 14, marginTop: 20, marginBottom: 8 }}>tDCS-Relevant Patterns</h3>
+                {tdcsPatterns.insufficientData ? (
+                  <div className="empty-state">Not enough data yet to check for tDCS-relevant patterns.</div>
+                ) : tdcsPatterns.flags.length === 0 ? (
+                  <div className="empty-state">No context shows a meaningful interference gap (≥8 pts) for {player} yet.</div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    {tdcsPatterns.flags.map((f, i) => (
+                      <div key={i} className={`flag-banner ${f.type === 'sleep_debt' ? 'critical' : 'amber'}`}>
+                        <strong>{f.protocol}</strong> — {f.summary}
+                        <br />
+                        <span style={{ fontSize: 12, opacity: 0.85 }}>{f.evidence}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <h3 style={{ fontSize: 14, marginTop: 20, marginBottom: 8 }}>Unexplained Interference — Tag It</h3>
+                <p className="panel-caption">
+                  These patterns don&rsquo;t cover everything — lack of skill/knowledge, motivation, and
+                  conflict have no structured signal in this data. Tag specific games below so those causes
+                  build into a real record instead of staying anecdotal.
+                </p>
+                <InterferenceTaggingForm
+                  player={player}
+                  rows={rowsWithInterference}
+                  existingTags={tagRows}
+                  tagsLoading={tagLoading}
+                  tagsError={tagError}
+                  onTagged={refetchTags}
+                />
+              </>
+            )}
           </div>
 
           <div className="panel">
@@ -492,6 +749,16 @@ Official-match sample size is small across the whole roster (28 series total, GR
               <li>
                 Opponent tier mapping only covers CLAUDE.md&rsquo;s ranked LCS opponents; Americas Cup /
                 regional opponents are grouped as Unranked rather than assigned a guessed tier.
+              </li>
+              <li>
+                <strong>Interference / Potential / tDCS flags (added 2026-07-12):</strong> Potential is a
+                statistical ceiling estimate (top-decile of a player&rsquo;s own scored games), not a claim
+                about their true skill limit — it can and will shift as more games are logged. tDCS pattern
+                flags are grounded in the tdcs-sleep-research folder's actual evidence, including its
+                caveats (e.g. Ankri 2023's mixed rDLPFC result, S022's null tilt-reset result) — they surface
+                a pattern worth a conversation, not an automated prescription. Skill gaps, motivation, and
+                conflict have no structured signal here; the tagging tool exists specifically because this
+                model can&rsquo;t see those on its own.
               </li>
             </ul>
           </div>
