@@ -21,6 +21,9 @@ import {
 import {
   computePotential, attachInterference, computeTdcsPatternFlags,
 } from '../lib/interference.js'
+import {
+  attachPriorGameGood, computeConditionCards,
+} from '../lib/patternMining.js'
 
 const TAG_OPTIONS = [
   { value: 'skill_gap', label: 'Skill / Knowledge Gap' },
@@ -386,8 +389,24 @@ export default function IndividualPlayerPerformance() {
     [player]
   )
 
+  const { data: dailyEntries, error: dailyError, loading: dailyLoading } = useSupabaseQuery(
+    () => supabase.from('daily_entries').select('player, entry_date, vibe_check'),
+    []
+  )
+
   const sleepByPlayer = useMemo(() => (nightlyRows ? groupByPlayer(nightlyRows) : {}), [nightlyRows])
   const sessionTypeByDate = useMemo(() => (sessions ? buildSessionTypeByDate(sessions) : {}), [sessions])
+  const vibeByDate = useMemo(() => {
+    const map = new Map()
+    if (dailyEntries) {
+      for (const e of dailyEntries) {
+        if (e.player === player && e.entry_date != null && e.vibe_check != null) {
+          map.set(e.entry_date, e.vibe_check)
+        }
+      }
+    }
+    return map
+  }, [dailyEntries, player])
   const sentinelsRawRows = useMemo(() => (allGridRows ? allGridRows.filter((r) => r.is_sentinels) : []), [allGridRows])
   const opponentNetWorthByGameRole = useMemo(
     () => (allGridRows ? buildOpponentNetWorthByGameRole(allGridRows) : new Map()),
@@ -405,8 +424,8 @@ export default function IndividualPlayerPerformance() {
   const endurance = useMemo(() => computeEnduranceByGameNumber(playerRows), [playerRows])
   const tilt = useMemo(() => computeTiltRecovery(playerRows), [playerRows])
 
-  const loading = gridLoading || nightlyLoading || sessLoading
-  const error = gridError || nightlyError || sessError
+  const loading = gridLoading || nightlyLoading || sessLoading || dailyLoading
+  const error = gridError || nightlyError || sessError || dailyError
 
   const scoredRows = playerRows.filter((r) => r.performanceIndex != null)
   const officialRows = scoredRows.filter((r) => r.seriesType === 'ESPORTS')
@@ -426,6 +445,40 @@ export default function IndividualPlayerPerformance() {
     () => computeTdcsPatternFlags(rowsWithInterference.filter((r) => r.performanceIndex != null), tilt),
     [rowsWithInterference, tilt]
   )
+
+  // Enrich with vibe (same-day), opponent tier, and prior-game-good — the
+  // extra fields the Evidence-Based Patterns and Match Report Card panels
+  // need beyond what performanceIndex.js/interference.js already attach.
+  const enrichedRows = useMemo(() => {
+    const withVibeAndTier = rowsWithInterference.map((r) => ({
+      ...r,
+      vibe: r.date && vibeByDate.has(r.date) ? vibeByDate.get(r.date) : null,
+      tier: opponentTier(r.opponentName),
+    }))
+    return attachPriorGameGood(withVibeAndTier)
+  }, [rowsWithInterference, vibeByDate])
+
+  const [patternScope, setPatternScope] = useState('all') // 'all' | 'scrim' | 'official'
+  const patternRows = useMemo(() => {
+    if (patternScope === 'scrim') return enrichedRows.filter((r) => r.seriesType === 'SCRIM')
+    if (patternScope === 'official') return enrichedRows.filter((r) => r.seriesType === 'ESPORTS')
+    return enrichedRows
+  }, [enrichedRows, patternScope])
+  const conditionCards = useMemo(() => computeConditionCards(patternRows), [patternRows])
+
+  const [matchIdx, setMatchIdx] = useState('')
+  const matchOptions = useMemo(
+    () => enrichedRows.filter((r) => r.performanceIndex != null).slice().sort((a, b) => (a.date < b.date ? 1 : -1)),
+    [enrichedRows]
+  )
+  const selectedMatch = matchIdx !== '' ? matchOptions[Number(matchIdx)] : matchOptions[0]
+  const matchPercentile = useMemo(() => {
+    if (!selectedMatch || selectedMatch.performanceIndex == null) return null
+    const all = scoredRows.map((r) => r.performanceIndex)
+    if (all.length === 0) return null
+    const below = all.filter((v) => v <= selectedMatch.performanceIndex).length
+    return Math.round((below / all.length) * 100)
+  }, [selectedMatch, scoredRows])
 
   return (
     <div>
@@ -482,6 +535,68 @@ export default function IndividualPlayerPerformance() {
               {playerRows.length} dated games for {player} — {scoredRows.length} scored, {unscoredCount} not
               yet scored (still building a baseline).
             </p>
+          </div>
+
+          <div className="panel">
+            <h2>Match Report Card — {player}</h2>
+            <p className="panel-caption">
+              Pick a game to get an objective read the moment a result comes in — was this actually a
+              below-normal performance, or did the team lose (or win) despite {player} playing to their own
+              standard? Independent of the scoreboard.
+            </p>
+            {matchOptions.length === 0 ? (
+              <div className="empty-state">No scored games available yet for {player}.</div>
+            ) : (
+              <>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--text-dim)', marginBottom: 14, maxWidth: 480 }}>
+                  Game
+                  <select value={matchIdx} onChange={(e) => setMatchIdx(e.target.value)}>
+                    {matchOptions.map((r, i) => (
+                      <option key={i} value={i}>
+                        {formatDate(r.date)} vs {r.opponentName} ({r.champion}) — {r.sentinelsWonGame === true ? 'Win' : r.sentinelsWonGame === false ? 'Loss' : 'Result unknown'}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {selectedMatch && (
+                  <>
+                    <p style={{ fontSize: 14, lineHeight: 1.6, marginBottom: 14 }}>
+                      {selectedMatch.performanceIndex > 55 && (
+                        <>Objectively, this was an <strong>above-normal</strong> performance for {player} on {selectedMatch.champion} — Index {selectedMatch.performanceIndex} (their own {matchPercentile}th percentile), independent of the {selectedMatch.sentinelsWonGame ? 'win' : 'loss'}.</>
+                      )}
+                      {selectedMatch.performanceIndex <= 55 && selectedMatch.performanceIndex >= 45 && (
+                        <>Objectively, this was <strong>roughly normal</strong> for {player} on {selectedMatch.champion} — Index {selectedMatch.performanceIndex} (their own {matchPercentile}th percentile). The {selectedMatch.sentinelsWonGame ? 'win' : 'loss'} isn&rsquo;t explained by an individual performance dip here.</>
+                      )}
+                      {selectedMatch.performanceIndex < 45 && (
+                        <>Objectively, this was a <strong>below-normal</strong> performance for {player} on {selectedMatch.champion} — Index {selectedMatch.performanceIndex} (their own {matchPercentile}th percentile), {Math.abs(selectedMatch.interference ?? 0)} pts of interference below their Potential.</>
+                      )}
+                    </p>
+                    <div className="stat-grid">
+                      <div className="stat-card">
+                        <div className="stat-label">Performance Index</div>
+                        <div className="stat-value">{selectedMatch.performanceIndex}</div>
+                        <div className="stat-sub">{matchPercentile}th percentile of own history</div>
+                      </div>
+                      <div className="stat-card">
+                        <div className="stat-label">K / D / A</div>
+                        <div className="stat-value">{selectedMatch.kills}/{selectedMatch.deaths}/{selectedMatch.assists}</div>
+                        <div className="stat-sub">KDA {selectedMatch.kda} · KP {selectedMatch.killParticipation ?? '—'}%</div>
+                      </div>
+                      <div className="stat-card">
+                        <div className="stat-label">Net Worth Diff vs Lane</div>
+                        <div className="stat-value">{selectedMatch.netWorthDiff ?? '—'}</div>
+                        <div className="stat-sub">vs same-role opponent</div>
+                      </div>
+                      <div className="stat-card">
+                        <div className="stat-label">Sleep Context</div>
+                        <div className="stat-value">{selectedMatch.rollingAvgSleep ?? '—'}h</div>
+                        <div className="stat-sub">3-night rolling{selectedMatch.sameNightSleepHours != null ? ` · same-night ${selectedMatch.sameNightSleepHours}h` : ''}</div>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </>
+            )}
           </div>
 
           <div className="panel">
@@ -549,6 +664,48 @@ export default function IndividualPlayerPerformance() {
                   onTagged={refetchTags}
                 />
               </>
+            )}
+          </div>
+
+          <div className="panel">
+            <h2>Evidence-Based Patterns — {player}</h2>
+            <p className="panel-caption">
+              &ldquo;When {player} does X, how often is that a good performance (Index &gt;50, above their own
+              average)?&rdquo; Every figure below is a Wilson confidence interval, not a bare percentage — a
+              pattern from 6 games looks very different from one built on 40. Conditions with fewer than 5
+              games on either side are marked insufficient rather than reported as if they were solid.
+              Officials and Scrims can behave differently, so pick a scope below rather than reading one
+              blended number.
+            </p>
+            <div className="player-tabs" style={{ marginBottom: 14 }}>
+              <button type="button" className={`player-tab ${patternScope === 'all' ? 'active' : ''}`} onClick={() => setPatternScope('all')}>All Games</button>
+              <button type="button" className={`player-tab ${patternScope === 'scrim' ? 'active' : ''}`} onClick={() => setPatternScope('scrim')}>Scrim Only</button>
+              <button type="button" className={`player-tab ${patternScope === 'official' ? 'active' : ''}`} onClick={() => setPatternScope('official')}>Official Only</button>
+            </div>
+            <p className="panel-caption">
+              Baseline: {player} has a good performance {conditionCards.baseline ?? '—'}% of the time overall
+              in this scope (n={conditionCards.totalScored} scored games).
+            </p>
+            {conditionCards.totalScored < 10 ? (
+              <div className="empty-state">Only {conditionCards.totalScored} scored games in this scope — not enough to mine patterns reliably yet.</div>
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 10 }}>
+                {conditionCards.cards.map((c) => (
+                  <div key={c.key} className={`stat-card ${!c.insufficientData && c.lift != null && Math.abs(c.lift) >= 15 ? (c.lift > 0 ? '' : 'flag-amber') : ''}`}>
+                    <div className="stat-label">{c.label}</div>
+                    {c.insufficientData ? (
+                      <div className="stat-sub">Not enough games yet (n={c.n} vs n={c.nOther} — need 5+ on both sides)</div>
+                    ) : (
+                      <>
+                        <div className="stat-value" style={{ fontSize: 20 }}>{c.pGood}%</div>
+                        <div className="stat-sub">
+                          95% CI {c.ciLow}%–{c.ciHigh}% · n={c.n} · vs {c.baseline}% baseline ({c.lift > 0 ? '+' : ''}{c.lift} pts)
+                        </div>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
             )}
           </div>
 
@@ -759,6 +916,16 @@ Official-match sample size is small across the whole roster (28 series total, GR
                 a pattern worth a conversation, not an automated prescription. Skill gaps, motivation, and
                 conflict have no structured signal here; the tagging tool exists specifically because this
                 model can&rsquo;t see those on its own.
+              </li>
+              <li>
+                <strong>Match Report Card / Evidence-Based Patterns (added 2026-07-12):</strong> &ldquo;good
+                performance&rdquo; means Index &gt;50 (above this player&rsquo;s own average) — a modest bar,
+                not an elite one. Pattern probabilities use a Wilson confidence interval specifically because
+                small samples (this whole roster has ~60-70 scored games per player, fewer for Official-only)
+                produce wide, honest intervals rather than a falsely precise percentage — read the interval,
+                not just the point estimate. Vibe is same-day (entry_date = game date) from the daily check-in;
+                a day with no logged vibe simply excludes that game from vibe-based conditions rather than
+                guessing.
               </li>
             </ul>
           </div>
