@@ -15,7 +15,7 @@ const TABS = [
   { key: 'correlation', label: 'Correlation Explorer' },
   { key: 'entry', label: 'Data Entry' },
   { key: 'sleepDebt', label: 'Sleep Debt Analysis' },
-  { key: 'individualPerf', label: 'Individual Player Performance' },
+  { key: 'individualPerf', label: 'Player Performance Dashboard' },
 ]
 
 function App() {

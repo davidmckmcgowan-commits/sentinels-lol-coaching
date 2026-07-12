@@ -124,6 +124,34 @@ export function sleepDebtColor(hours) {
   return SLEEP_DEBT_BANDS[SLEEP_DEBT_BANDS.length - 1].color
 }
 
+// Opponent tier ranking (1=worst, 5=best), per CLAUDE.md's Opponent Tier
+// Ranking table. Only the LCS-tracked opponents CLAUDE.md actually ranks are
+// included — Americas Cup / regional opponents (Furia, RED Canids Kalunga,
+// KaBuM! IDL, LOL-1/2, Vivo Keyd Stars) aren't in that table and are left
+// unranked rather than guessed.
+export const OPPONENT_TIER_BY_NAME = {
+  'team liquid': 5,
+  'team liquid alienware': 5,
+  tl: 5,
+  lyon: 5,
+  'cloud9 kia': 4,
+  cloud9: 4,
+  c9: 4,
+  flyquest: 4,
+  fly: 4,
+  'shopify rebellion': 3,
+  sr: 3,
+  dignitas: 3,
+  dig: 3,
+  disguised: 3,
+  dsg: 3,
+}
+
+export function opponentTier(opponentName) {
+  if (!opponentName) return null
+  return OPPONENT_TIER_BY_NAME[opponentName.trim().toLowerCase()] ?? null
+}
+
 // Hard-gate / isolated-disruption thresholds, per the research addendum.
 export const HARD_GATE_HOURS = 5.0
 export const ISOLATED_DISRUPTION_HOURS = 6.5

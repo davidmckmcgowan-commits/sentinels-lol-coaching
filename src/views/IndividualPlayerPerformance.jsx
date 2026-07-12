@@ -1,39 +1,48 @@
 import { useMemo, useState } from 'react'
 import {
   BarChart, Bar, Cell, LabelList, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, ComposedChart, Line,
+  ResponsiveContainer, ComposedChart, Line, ReferenceLine,
 } from 'recharts'
 import { supabase } from '../lib/supabaseClient.js'
 import { useSupabaseQuery } from '../lib/useSupabaseQuery.js'
 import {
   ROSTER_PLAYERS, SLEEP_DEBT_BANDS, sleepDebtColor, formatDate, bucketize,
+  opponentTier, average,
 } from '../lib/constants.js'
 import { groupByPlayer } from '../lib/sleepDebt.js'
 import {
   buildSessionTypeByDate, buildPlayerPerformanceSeries, averageByGroup,
   flagOverextensionCandidates,
 } from '../lib/individualPerformance.js'
+import {
+  buildOpponentNetWorthByGameRole, attachNetWorthDiff, computePerformanceIndex,
+  computeEnduranceByGameNumber, computeTiltRecovery,
+} from '../lib/performanceIndex.js'
 
 const SESSION_TYPE_ORDER = ['Green', 'Orange', 'Red', 'Official']
+const TIER_ORDER = ['Tier 5', 'Tier 4', 'Tier 3', 'Tier 2', 'Tier 1', 'Unranked']
 
-// ---- Chart 1: KDA over time, dot colored by 3-night rolling sleep band --------
+// ---- Performance Index trend over time, dot colored by 3-night sleep band -
 
-function KdaTrendChart({ rows }) {
-  const chartData = rows.map((r, idx) => ({
-    idx,
-    label: formatDate(r.date),
-    date: r.date,
-    kda: r.kda,
-    champion: r.champion,
-    rollingAvgSleep: r.rollingAvgSleep,
-    sameNightSleepHours: r.sameNightSleepHours,
-    opponentName: r.opponentName,
-    seriesType: r.seriesType,
-    sessionTypeLabel: r.sessionTypeLabel,
-  }))
+function PerformanceTrendChart({ rows }) {
+  const chartData = rows
+    .filter((r) => r.performanceIndex != null)
+    .map((r, idx) => ({
+      idx,
+      label: formatDate(r.date),
+      date: r.date,
+      performanceIndex: r.performanceIndex,
+      champion: r.champion,
+      rollingAvgSleep: r.rollingAvgSleep,
+      sameNightSleepHours: r.sameNightSleepHours,
+      opponentName: r.opponentName,
+      seriesType: r.seriesType,
+      sessionTypeLabel: r.sessionTypeLabel,
+      baselineSource: r.baselineSource,
+    }))
 
   if (chartData.length === 0) {
-    return <div className="empty-state">No dated games found for this player.</div>
+    return <div className="empty-state">No scored games for this player yet.</div>
   }
 
   return (
@@ -42,25 +51,25 @@ function KdaTrendChart({ rows }) {
         <ComposedChart data={chartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#2a2f3a" />
           <XAxis dataKey="label" stroke="#9aa1ae" fontSize={10} minTickGap={30} />
-          <YAxis stroke="#9aa1ae" fontSize={12} label={{ value: 'KDA', angle: -90, position: 'insideLeft', fill: '#676f7d', fontSize: 11 }} />
+          <YAxis domain={[0, 100]} stroke="#9aa1ae" fontSize={12} label={{ value: 'Performance Index', angle: -90, position: 'insideLeft', fill: '#676f7d', fontSize: 11 }} />
+          <ReferenceLine y={50} stroke="#676f7d" strokeDasharray="4 4" label={{ value: 'own average', position: 'insideTopRight', fill: '#676f7d', fontSize: 10 }} />
           <Tooltip
             contentStyle={{ background: '#171a21', border: '1px solid #2a2f3a', fontSize: 12 }}
             formatter={(value, name, props) => {
-              if (name === 'kda') {
+              if (name === 'performanceIndex') {
                 const d = props.payload
-                const sleepBit = d.rollingAvgSleep != null
-                  ? `3-night sleep avg: ${d.rollingAvgSleep}h`
-                  : 'no 3-night sleep avg available'
+                const sleepBit = d.rollingAvgSleep != null ? `3-night sleep avg: ${d.rollingAvgSleep}h` : 'no 3-night sleep avg available'
                 const sameNight = d.sameNightSleepHours != null ? ` (same-night: ${d.sameNightSleepHours}h)` : ''
                 const typeBit = d.sessionTypeLabel ? `${d.seriesType} / ${d.sessionTypeLabel}` : `${d.seriesType} (unmatched to Green/Orange/Red/Official)`
-                return [`${value} KDA on ${d.champion} vs ${d.opponentName} — ${typeBit} — ${sleepBit}${sameNight}`, 'KDA']
+                const baselineBit = d.baselineSource === 'role' ? ' — role-level baseline (low champion sample)' : ''
+                return [`${value} on ${d.champion} vs ${d.opponentName} — ${typeBit} — ${sleepBit}${sameNight}${baselineBit}`, 'Performance Index']
               }
               return [value, name]
             }}
           />
           <Line
             type="monotone"
-            dataKey="kda"
+            dataKey="performanceIndex"
             stroke="#d4a017"
             strokeWidth={1.5}
             dot={(props) => {
@@ -69,7 +78,7 @@ function KdaTrendChart({ rows }) {
               return <circle key={`dot-${payload.idx}`} cx={cx} cy={cy} r={3} fill={color} stroke={color} />
             }}
             isAnimationActive={false}
-            name="kda"
+            name="performanceIndex"
           />
         </ComposedChart>
       </ResponsiveContainer>
@@ -77,24 +86,25 @@ function KdaTrendChart({ rows }) {
   )
 }
 
-// ---- Chart 2: avg KDA by sleep-debt band (same-night or 3-night rolling) ------
+// ---- Avg Performance Index by sleep-debt band ------------------------------
 
-function KdaBySleepBandChart({ rows, mode }) {
+function IndexBySleepBandChart({ rows, mode }) {
   const data = useMemo(() => {
     const valueFn = mode === 'rolling' ? (r) => r.rollingAvgSleep : (r) => r.sameNightSleepHours
     const buckets = {}
     for (const b of SLEEP_DEBT_BANDS) buckets[b.label] = { label: b.label, color: b.color, sum: 0, n: 0 }
     for (const r of rows) {
+      if (r.performanceIndex == null) continue
       const sleepValue = valueFn(r)
       if (sleepValue == null) continue
       const label = bucketize(sleepValue, SLEEP_DEBT_BANDS)
       if (!label) continue
-      buckets[label].sum += r.kda
+      buckets[label].sum += r.performanceIndex
       buckets[label].n += 1
     }
     return SLEEP_DEBT_BANDS.map((b) => {
       const e = buckets[b.label]
-      return { ...e, avgKda: e.n > 0 ? Math.round((e.sum / e.n) * 100) / 100 : 0 }
+      return { ...e, avg: e.n > 0 ? Math.round((e.sum / e.n) * 10) / 10 : 0 }
     })
   }, [rows, mode])
 
@@ -103,24 +113,21 @@ function KdaBySleepBandChart({ rows, mode }) {
   return (
     <div className="chart-wrap">
       {!anyData ? (
-        <div className="empty-state">
-          No games could be matched to a {mode === 'rolling' ? '3-night rolling' : 'same-night'} sleep value.
-        </div>
+        <div className="empty-state">No games could be matched to a {mode === 'rolling' ? '3-night rolling' : 'same-night'} sleep value.</div>
       ) : (
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={data} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#2a2f3a" />
             <XAxis dataKey="label" stroke="#9aa1ae" fontSize={11} />
-            <YAxis stroke="#9aa1ae" fontSize={12} label={{ value: 'Avg KDA', angle: -90, position: 'insideLeft', fill: '#676f7d', fontSize: 11 }} />
+            <YAxis domain={[0, 100]} stroke="#9aa1ae" fontSize={12} label={{ value: 'Avg Index', angle: -90, position: 'insideLeft', fill: '#676f7d', fontSize: 11 }} />
+            <ReferenceLine y={50} stroke="#676f7d" strokeDasharray="4 4" />
             <Tooltip
               contentStyle={{ background: '#171a21', border: '1px solid #2a2f3a', fontSize: 12 }}
-              formatter={(value, name, props) => [`${value} avg KDA (n=${props.payload.n})`, 'Avg KDA']}
+              formatter={(value, name, props) => [`${value} avg Index (n=${props.payload.n})`, 'Avg Index']}
             />
-            <Bar dataKey="avgKda" radius={[4, 4, 0, 0]}>
-              {data.map((entry, idx) => (
-                <Cell key={idx} fill={entry.color} />
-              ))}
-              <LabelList dataKey="avgKda" position="top" formatter={(v) => (v > 0 ? v : '')} fill="#e6e8ec" fontSize={11} />
+            <Bar dataKey="avg" radius={[4, 4, 0, 0]}>
+              {data.map((entry, idx) => (<Cell key={idx} fill={entry.color} />))}
+              <LabelList dataKey="avg" position="top" formatter={(v) => (v > 0 ? v : '')} fill="#e6e8ec" fontSize={11} />
             </Bar>
           </BarChart>
         </ResponsiveContainer>
@@ -129,93 +136,37 @@ function KdaBySleepBandChart({ rows, mode }) {
   )
 }
 
-// ---- Chart 3: avg KDA by SCRIM vs ESPORTS (native GRID split, full sample) ----
+// ---- Generic small bar chart for Index grouped by an arbitrary key ---------
 
-function ScrimVsEsportsChart({ rows }) {
-  const data = useMemo(
-    () => averageByGroup(rows, (r) => r.seriesType, (r) => r.kda).sort((a, b) => a.key.localeCompare(b.key)),
-    [rows]
-  )
+function IndexGroupChart({ rows, keyFn, sortOrder, color = '#5b8def', yLabel = 'Avg Index' }) {
+  const data = useMemo(() => {
+    const grouped = averageByGroup(rows, keyFn, (r) => r.performanceIndex)
+    if (sortOrder) {
+      return grouped.sort((a, b) => sortOrder.indexOf(a.key) - sortOrder.indexOf(b.key))
+    }
+    return grouped.sort((a, b) => b.avg - a.avg)
+  }, [rows, keyFn, sortOrder])
 
-  const esportsRow = data.find((d) => d.key === 'ESPORTS')
-  const smallSample = esportsRow && esportsRow.n < 30
-
-  return (
-    <>
-      {smallSample && (
-        <div className="flag-banner amber">
-          Small sample: only {esportsRow.n} ESPORTS games logged for this player. Treat any SCRIM-vs-ESPORTS
-          gap here as directional, not conclusive — see Coverage Caveats below.
-        </div>
-      )}
-      <div className="chart-wrap">
-        {data.length === 0 ? (
-          <div className="empty-state">No games available.</div>
-        ) : (
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={data} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#2a2f3a" />
-              <XAxis dataKey="key" stroke="#9aa1ae" fontSize={12} />
-              <YAxis stroke="#9aa1ae" fontSize={12} label={{ value: 'Avg KDA', angle: -90, position: 'insideLeft', fill: '#676f7d', fontSize: 11 }} />
-              <Tooltip
-                contentStyle={{ background: '#171a21', border: '1px solid #2a2f3a', fontSize: 12 }}
-                formatter={(value, name, props) => [`${value} avg KDA (n=${props.payload.n})`, 'Avg KDA']}
-              />
-              <Bar dataKey="avg" radius={[4, 4, 0, 0]} fill="#5b8def">
-                <LabelList dataKey="avg" position="top" formatter={(v, i) => `${v} (n=${data[i]?.n ?? ''})`} fill="#e6e8ec" fontSize={11} />
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        )}
-      </div>
-    </>
-  )
-}
-
-// ---- Chart 4: avg KDA by Green/Orange/Red/Official (matched subset only) -----
-
-function SessionTypeChart({ rows }) {
-  const matchedRows = rows.filter((r) => r.sessionTypeLabel && !r.sessionTypeAmbiguous)
-  const data = useMemo(
-    () => averageByGroup(matchedRows, (r) => r.sessionTypeLabel, (r) => r.kda)
-      .sort((a, b) => SESSION_TYPE_ORDER.indexOf(a.key) - SESSION_TYPE_ORDER.indexOf(b.key)),
-    [matchedRows]
-  )
-
-  const totalScrimRows = rows.filter((r) => r.seriesType === 'SCRIM').length
-  const matchedScrimRows = rows.filter((r) => r.seriesType === 'SCRIM' && r.sessionTypeLabel && !r.sessionTypeAmbiguous).length
-  const matchRate = totalScrimRows > 0 ? Math.round((matchedScrimRows / totalScrimRows) * 1000) / 10 : 0
-  const officialRows = rows.filter((r) => r.seriesType === 'ESPORTS').length
+  if (data.length === 0) return <div className="empty-state">No scored games available for this cut.</div>
 
   return (
-    <>
-      <div className="flag-banner amber">
-        Official is taken directly from GRID&rsquo;s own ESPORTS flag for this player ({officialRows} games) —
-        no date join needed, so it can&rsquo;t be missed by a gap in the sessions sheet. Green/Orange/Red still
-        relies on a date join for SCRIM games only: {matchedScrimRows} of {totalScrimRows} SCRIM games ({matchRate}%)
-        matched to a practice-type label. The rest are excluded here rather than guessed.
-      </div>
-      <div className="chart-wrap">
-        {data.length === 0 ? (
-          <div className="empty-state">No games matched to a session type for this player.</div>
-        ) : (
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={data} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#2a2f3a" />
-              <XAxis dataKey="key" stroke="#9aa1ae" fontSize={11} />
-              <YAxis stroke="#9aa1ae" fontSize={12} label={{ value: 'Avg KDA', angle: -90, position: 'insideLeft', fill: '#676f7d', fontSize: 11 }} />
-              <Tooltip
-                contentStyle={{ background: '#171a21', border: '1px solid #2a2f3a', fontSize: 12 }}
-                formatter={(value, name, props) => [`${value} avg KDA (n=${props.payload.n})`, 'Avg KDA']}
-              />
-              <Bar dataKey="avg" radius={[4, 4, 0, 0]} fill="#8a6fd4">
-                <LabelList dataKey="avg" position="top" formatter={(v, i) => `${v} (n=${data[i]?.n ?? ''})`} fill="#e6e8ec" fontSize={11} />
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        )}
-      </div>
-    </>
+    <div className="chart-wrap">
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={data} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#2a2f3a" />
+          <XAxis dataKey="key" stroke="#9aa1ae" fontSize={11} interval={0} angle={data.length > 6 ? -25 : 0} textAnchor={data.length > 6 ? 'end' : 'middle'} height={data.length > 6 ? 50 : 30} />
+          <YAxis domain={[0, 100]} stroke="#9aa1ae" fontSize={12} label={{ value: yLabel, angle: -90, position: 'insideLeft', fill: '#676f7d', fontSize: 11 }} />
+          <ReferenceLine y={50} stroke="#676f7d" strokeDasharray="4 4" />
+          <Tooltip
+            contentStyle={{ background: '#171a21', border: '1px solid #2a2f3a', fontSize: 12 }}
+            formatter={(value, name, props) => [`${value} avg Index (n=${props.payload.n})`, 'Avg Index']}
+          />
+          <Bar dataKey="avg" radius={[4, 4, 0, 0]} fill={color}>
+            <LabelList dataKey="avg" position="top" formatter={(v, i) => `${v} (n=${data[i]?.n ?? ''})`} fill="#e6e8ec" fontSize={11} />
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
   )
 }
 
@@ -223,11 +174,13 @@ export default function IndividualPlayerPerformance() {
   const [player, setPlayer] = useState(ROSTER_PLAYERS[0])
   const [sleepMode, setSleepMode] = useState('rolling') // 'rolling' | 'sameNight'
 
-  const { data: gridRows, error: gridError, loading: gridLoading } = useSupabaseQuery(
+  // Fetch ALL grid_player_games rows (both teams, no is_sentinels filter) so we
+  // can look up the opposing same-role player's net worth for the Performance
+  // Index's economy component.
+  const { data: allGridRows, error: gridError, loading: gridLoading } = useSupabaseQuery(
     () => supabase
       .from('grid_player_games')
-      .select('player, role, champion, kills, deaths, assists, net_worth, grid_games(game_number, sentinels_won, sentinels_kills, opponent_kills, grid_series_id, grid_series(series_date, series_type, opponent_name, sentinels_won))')
-      .eq('is_sentinels', true)
+      .select('game_id, player, role, champion, kills, deaths, assists, net_worth, is_sentinels, team_name, grid_games(game_number, sentinels_won, sentinels_kills, opponent_kills, grid_series_id, grid_series(series_date, series_type, opponent_name, sentinels_won))')
       .not('player', 'is', null),
     []
   )
@@ -244,30 +197,46 @@ export default function IndividualPlayerPerformance() {
 
   const sleepByPlayer = useMemo(() => (nightlyRows ? groupByPlayer(nightlyRows) : {}), [nightlyRows])
   const sessionTypeByDate = useMemo(() => (sessions ? buildSessionTypeByDate(sessions) : {}), [sessions])
+  const sentinelsRawRows = useMemo(() => (allGridRows ? allGridRows.filter((r) => r.is_sentinels) : []), [allGridRows])
+  const opponentNetWorthByGameRole = useMemo(
+    () => (allGridRows ? buildOpponentNetWorthByGameRole(allGridRows) : new Map()),
+    [allGridRows]
+  )
 
   const playerRows = useMemo(() => {
-    if (!gridRows) return []
-    return buildPlayerPerformanceSeries({ rawRows: gridRows, player, sleepByPlayer, sessionTypeByDate })
-  }, [gridRows, player, sleepByPlayer, sessionTypeByDate])
+    if (!allGridRows) return []
+    const base = buildPlayerPerformanceSeries({ rawRows: sentinelsRawRows, player, sleepByPlayer, sessionTypeByDate })
+    const withNetWorth = attachNetWorthDiff(base, opponentNetWorthByGameRole)
+    return computePerformanceIndex(withNetWorth)
+  }, [allGridRows, sentinelsRawRows, player, sleepByPlayer, sessionTypeByDate, opponentNetWorthByGameRole])
 
   const overextensionFlags = useMemo(() => flagOverextensionCandidates(playerRows), [playerRows])
+  const endurance = useMemo(() => computeEnduranceByGameNumber(playerRows), [playerRows])
+  const tilt = useMemo(() => computeTiltRecovery(playerRows), [playerRows])
 
   const loading = gridLoading || nightlyLoading || sessLoading
   const error = gridError || nightlyError || sessError
 
-  const esportsCount = playerRows.filter((r) => r.seriesType === 'ESPORTS').length
-  const scrimCount = playerRows.filter((r) => r.seriesType === 'SCRIM').length
+  const scoredRows = playerRows.filter((r) => r.performanceIndex != null)
+  const officialRows = scoredRows.filter((r) => r.seriesType === 'ESPORTS')
+  const scrimRows = scoredRows.filter((r) => r.seriesType === 'SCRIM')
+  const avgOfficial = average(officialRows.map((r) => r.performanceIndex))
+  const avgScrim = average(scrimRows.map((r) => r.performanceIndex))
+  const champBackedCount = scoredRows.filter((r) => r.baselineSource === 'champion').length
+  const roleFallbackCount = scoredRows.filter((r) => r.baselineSource === 'role').length
+  const unscoredCount = playerRows.length - scoredRows.length
 
   return (
     <div>
       <div className="panel">
-        <h2>Individual Player Performance</h2>
+        <h2>Player Performance Dashboard</h2>
         <p className="panel-caption">
-          Per-player KDA and kill participation from GRID match data, cross-referenced against sleep
-          (same-night and 3-night rolling average, using the same methodology as Sleep Debt Analysis) and
-          against session intensity. Per A-R1, this view never compares one player&rsquo;s numbers to
-          another&rsquo;s — each player is judged against their own trend only. Per A-R4, champion is shown
-          on every game; a dip on an off-meta pick is not the same signal as a dip on a comfort pick.
+          Performance Index blends KDA, kill participation, and net-worth differential vs the same-role
+          opponent — each z-scored against this player&rsquo;s own history on that champion (or role, when
+          the champion sample is thin), then mapped to a 0-100 scale where 50 is that player&rsquo;s own
+          average. Per A-R1, this never compares one player&rsquo;s number to another&rsquo;s. Per A-R4,
+          champion is attached everywhere. See Coverage Caveats at the bottom for exactly what this can and
+          can&rsquo;t see.
         </p>
         {loading && <div className="loading-state">Loading GRID, sleep, and session data…</div>}
         {error && <div className="toast error">Error loading data: {error.message}</div>}
@@ -278,85 +247,173 @@ export default function IndividualPlayerPerformance() {
           <div className="panel">
             <div className="player-tabs">
               {ROSTER_PLAYERS.map((p) => (
-                <button
-                  key={p}
-                  type="button"
-                  className={`player-tab ${player === p ? 'active' : ''}`}
-                  onClick={() => setPlayer(p)}
-                >
+                <button key={p} type="button" className={`player-tab ${player === p ? 'active' : ''}`} onClick={() => setPlayer(p)}>
                   {p}
                 </button>
               ))}
             </div>
-            <p className="panel-caption">
-              {playerRows.length} dated games for {player} ({scrimCount} SCRIM, {esportsCount} ESPORTS).
-            </p>
-          </div>
 
-          <div className="panel">
-            <h2>KDA Over Time — {player}</h2>
-            <p className="panel-caption">
-              Dot color follows the same sleep-debt bands as Sleep Debt Analysis (green optimal → red
-              severe), based on the 3-night rolling average as of that game&rsquo;s date. Hover a point for
-              champion, opponent, session type, and both same-night and rolling sleep figures.
-            </p>
-            <KdaTrendChart rows={playerRows} />
-          </div>
-
-          <div className="panel">
-            <h2>KDA vs Sleep — {player}</h2>
-            <p className="panel-caption">
-              Average KDA bucketed by sleep-debt band. Toggle between same-night sleep on game day and the
-              3-night rolling average — per S-R1, the rolling average is the more reliable readiness signal;
-              same-night is shown for comparison, not as the primary read.
-            </p>
-            <div className="player-tabs" style={{ marginBottom: 12 }}>
-              <button
-                type="button"
-                className={`player-tab ${sleepMode === 'rolling' ? 'active' : ''}`}
-                onClick={() => setSleepMode('rolling')}
-              >
-                3-night rolling avg
-              </button>
-              <button
-                type="button"
-                className={`player-tab ${sleepMode === 'sameNight' ? 'active' : ''}`}
-                onClick={() => setSleepMode('sameNight')}
-              >
-                Same-night
-              </button>
+            <div className="stat-grid">
+              <div className="stat-card">
+                <div className="stat-label">Performance Index — Official</div>
+                <div className="stat-value">{avgOfficial != null ? avgOfficial.toFixed(1) : '—'}</div>
+                <div className="stat-sub">n={officialRows.length} ESPORTS games</div>
+              </div>
+              <div className="stat-card">
+                <div className="stat-label">Performance Index — Scrim</div>
+                <div className="stat-value">{avgScrim != null ? avgScrim.toFixed(1) : '—'}</div>
+                <div className="stat-sub">n={scrimRows.length} SCRIM games</div>
+              </div>
+              <div className={`stat-card ${tilt.insufficientData || tilt.avgIndexAfterBadGame == null ? '' : tilt.avgIndexAfterBadGame < tilt.overallAvgIndex - 5 ? 'flag-amber' : ''}`}>
+                <div className="stat-label">Index After a Bad Game</div>
+                <div className="stat-value">{tilt.insufficientData ? '—' : (tilt.avgIndexAfterBadGame ?? '—')}</div>
+                <div className="stat-sub">
+                  {tilt.insufficientData ? 'not enough series data yet' : `own avg ${tilt.overallAvgIndex} · n=${tilt.recoverySampleSize} recoveries`}
+                </div>
+              </div>
+              <div className="stat-card">
+                <div className="stat-label">Baseline Confidence</div>
+                <div className="stat-value">{playerRows.length > 0 ? Math.round((champBackedCount / playerRows.length) * 100) : 0}%</div>
+                <div className="stat-sub">{champBackedCount} champion-backed · {roleFallbackCount} role fallback · {unscoredCount} unscored</div>
+              </div>
             </div>
-            <KdaBySleepBandChart rows={playerRows} mode={sleepMode === 'rolling' ? 'rolling' : 'sameNight'} />
+            <p className="panel-caption">
+              {playerRows.length} dated games for {player} — {scoredRows.length} scored, {unscoredCount} not
+              yet scored (still building a baseline).
+            </p>
+          </div>
+
+          <div className="panel">
+            <h2>Performance Index Over Time — {player}</h2>
+            <p className="panel-caption">
+              Dot color follows the same sleep-debt bands as Sleep Debt Analysis (green optimal → red severe),
+              based on the 3-night rolling average as of that game&rsquo;s date. The dashed line at 50 is
+              {' '}{player}&rsquo;s own average — not a league or team benchmark.
+            </p>
+            <PerformanceTrendChart rows={playerRows} />
+          </div>
+
+          <div className="panel">
+            <h2>By Champion — {player}</h2>
+            <p className="panel-caption">
+              Average Performance Index per champion played. A champion with a small n here has a shakier
+              baseline (see Baseline Confidence above) — read a dip on a rarely-played pick as low-confidence,
+              not as a real trend, per A-R4.
+            </p>
+            <IndexGroupChart rows={scoredRows} keyFn={(r) => r.champion} color="#d4a017" />
+          </div>
+
+          <div className="panel">
+            <h2>By Opponent Tier — {player}</h2>
+            <p className="panel-caption">
+              Tier 5 = TL/Lyon, Tier 4 = C9/FLY, Tier 3 = SR/DIG/DSG, per CLAUDE.md&rsquo;s ranking. Americas
+              Cup / regional opponents (Furia, RED Canids Kalunga, etc.) aren&rsquo;t in that ranking and are
+              grouped as Unranked rather than guessed at.
+            </p>
+            <IndexGroupChart rows={scoredRows} keyFn={(r) => { const t = opponentTier(r.opponentName); return t ? `Tier ${t}` : 'Unranked' }} sortOrder={TIER_ORDER} color="#8a6fd4" />
           </div>
 
           <div className="panel">
             <h2>SCRIM vs ESPORTS — {player}</h2>
             <p className="panel-caption">
-              This is GRID&rsquo;s native, always-available split (no date-join risk). Use this as the
-              primary read on whether performance holds up on stage; use the Green/Orange/Red/Official cut
-              below as a secondary, lower-coverage view.
+              GRID&rsquo;s native, always-available split — the primary read on whether performance holds up
+              on stage.
             </p>
-            <ScrimVsEsportsChart rows={playerRows} />
+            <IndexGroupChart rows={scoredRows} keyFn={(r) => r.seriesType} sortOrder={['SCRIM', 'ESPORTS']} color="#5b8def" />
           </div>
 
           <div className="panel">
             <h2>Green / Orange / Red / Official — {player}</h2>
             <p className="panel-caption">
-              Secondary cut, built by joining GRID&rsquo;s series date to your internal sessions table.
-              Coverage is partial (see the match-rate note below the chart) — treat this as a supplementary
-              signal, not the primary stage-performance read.
+              Secondary cut. Official comes directly from GRID&rsquo;s ESPORTS flag (always complete);
+              Green/Orange/Red comes from a date join to the sessions table for SCRIM games only, and
+              coverage there is partial.
             </p>
-            <SessionTypeChart rows={playerRows} />
+            <IndexGroupChart rows={scoredRows.filter((r) => r.sessionTypeLabel && !r.sessionTypeAmbiguous)} keyFn={(r) => r.sessionTypeLabel} sortOrder={SESSION_TYPE_ORDER} color="#8a6fd4" />
+          </div>
+
+          <div className="panel">
+            <h2>Endurance — Performance by Game Number in Series — {player}</h2>
+            <p className="panel-caption">
+              We don&rsquo;t have in-game timing (that&rsquo;s GRID&rsquo;s paid Series Events tier — see
+              Coverage Caveats), so this is the closest available proxy for &ldquo;do they fade as a series
+              goes on&rdquo;: average Performance Index by Game 1 vs Game 2 vs Game 3+ across all of{' '}
+              {player}&rsquo;s series.
+            </p>
+            <div className="chart-wrap">
+              {endurance.every((e) => e.n === 0) ? (
+                <div className="empty-state">No multi-game series data available.</div>
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={endurance} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#2a2f3a" />
+                    <XAxis dataKey="key" stroke="#9aa1ae" fontSize={11} />
+                    <YAxis domain={[0, 100]} stroke="#9aa1ae" fontSize={12} label={{ value: 'Avg Index', angle: -90, position: 'insideLeft', fill: '#676f7d', fontSize: 11 }} />
+                    <ReferenceLine y={50} stroke="#676f7d" strokeDasharray="4 4" />
+                    <Tooltip
+                      contentStyle={{ background: '#171a21', border: '1px solid #2a2f3a', fontSize: 12 }}
+                      formatter={(value, name, props) => [`${value} avg Index (n=${props.payload.n})`, 'Avg Index']}
+                    />
+                    <Bar dataKey="avg" radius={[4, 4, 0, 0]} fill="#3aa76d">
+                      <LabelList dataKey="avg" position="top" formatter={(v, i) => `${v ?? ''} (n=${endurance[i]?.n ?? ''})`} fill="#e6e8ec" fontSize={11} />
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+          </div>
+
+          <div className="panel">
+            <h2>Tilt Detector — {player}</h2>
+            <p className="panel-caption">
+              &ldquo;Bad game&rdquo; is defined as the bottom quartile of {player}&rsquo;s own Performance
+              Index distribution (A-R1: own control, not a team-wide bar). &ldquo;Recovery&rdquo; is the next
+              game_number within the same GRID series — the closest available proxy for &ldquo;immediately
+              after,&rdquo; since we don&rsquo;t have finer timestamps. Per S-R4, cross-check same-night and
+              3-night sleep before reading a poor recovery as a mentality issue rather than a sleep-debt one.
+            </p>
+            {tilt.insufficientData ? (
+              <div className="empty-state">Not enough series data yet to compute a tilt-recovery signal for {player}.</div>
+            ) : (
+              <div className="stat-grid">
+                <div className="stat-card">
+                  <div className="stat-label">Bad-Game Threshold</div>
+                  <div className="stat-value">≤{tilt.badGameThreshold}</div>
+                  <div className="stat-sub">{tilt.badGameCount} games at/below this line</div>
+                </div>
+                <div className="stat-card">
+                  <div className="stat-label">Own Average Index</div>
+                  <div className="stat-value">{tilt.overallAvgIndex}</div>
+                </div>
+                <div className={`stat-card ${tilt.avgIndexAfterBadGame != null && tilt.avgIndexAfterBadGame < tilt.overallAvgIndex - 5 ? 'flag-amber' : ''}`}>
+                  <div className="stat-label">Avg Index — Game Right After a Bad One</div>
+                  <div className="stat-value">{tilt.avgIndexAfterBadGame ?? '—'}</div>
+                  <div className="stat-sub">n={tilt.recoverySampleSize} same-series follow-up games</div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="panel">
+            <h2>Sleep vs Performance Index — {player}</h2>
+            <p className="panel-caption">
+              Average Performance Index bucketed by sleep-debt band. Per S-R1, the 3-night rolling average is
+              the more reliable readiness signal; same-night is shown for comparison, not as the primary read.
+            </p>
+            <div className="player-tabs" style={{ marginBottom: 12 }}>
+              <button type="button" className={`player-tab ${sleepMode === 'rolling' ? 'active' : ''}`} onClick={() => setSleepMode('rolling')}>3-night rolling avg</button>
+              <button type="button" className={`player-tab ${sleepMode === 'sameNight' ? 'active' : ''}`} onClick={() => setSleepMode('sameNight')}>Same-night</button>
+            </div>
+            <IndexBySleepBandChart rows={playerRows} mode={sleepMode === 'rolling' ? 'rolling' : 'sameNight'} />
           </div>
 
           <div className="panel">
             <h2>Overextension Candidates (Weak Signal) — {player}</h2>
             <p className="panel-caption">
-              GRID&rsquo;s Series Events product (kill/death timing and positions) is not included in the
-              current Open Access API key, so true &ldquo;over-chasing / giving body&rdquo; detection isn&rsquo;t
-              possible from this data. As a coarse proxy, games below are flagged where {player} died
-              {' '}5+ times, deaths outnumbered kills by 3+, and the game was lost. This is not a validated
-              measurement of over-extension — it&rsquo;s a starting point for manual review, nothing more.
+              GRID&rsquo;s Series Events product (kill/death timing and positions) isn&rsquo;t in the current
+              Open Access API key, so true over-chasing/giving-body detection isn&rsquo;t possible from this
+              data. As a coarse proxy, games below are flagged where {player} died 5+ times, deaths outnumbered
+              kills by 3+, and the game was lost — a starting point for manual review, not a validated measure.
             </p>
             {overextensionFlags.length === 0 ? (
               <div className="empty-state">No games matched this coarse pattern for {player}.</div>
@@ -364,13 +421,7 @@ export default function IndividualPlayerPerformance() {
               <div className="table-scroll">
                 <table>
                   <thead>
-                    <tr>
-                      <th>Date</th>
-                      <th>Champion</th>
-                      <th>Opponent</th>
-                      <th>K/D/A</th>
-                      <th>Session</th>
-                    </tr>
+                    <tr><th>Date</th><th>Champion</th><th>Opponent</th><th>K/D/A</th><th>Perf. Index</th><th>Session</th></tr>
                   </thead>
                   <tbody>
                     {overextensionFlags.map((r, i) => (
@@ -379,6 +430,7 @@ export default function IndividualPlayerPerformance() {
                         <td>{r.champion}</td>
                         <td>{r.opponentName}</td>
                         <td>{r.kills}/{r.deaths}/{r.assists}</td>
+                        <td>{r.performanceIndex ?? '—'}</td>
                         <td>{r.seriesType}{r.sessionTypeLabel ? ` / ${r.sessionTypeLabel}` : ''}</td>
                       </tr>
                     ))}
@@ -392,43 +444,41 @@ export default function IndividualPlayerPerformance() {
             <h2>Coverage Caveats</h2>
             <ul style={{ margin: 0, paddingLeft: 18, color: 'var(--text-dim)', fontSize: 13, lineHeight: 1.6 }}>
               <li>
-                Updated 2026-07-09 after auditing against Leaguepedia&rsquo;s Sentinels match history: Official
-                is now taken directly from GRID&rsquo;s own ESPORTS flag rather than a date join, so it&rsquo;s
-                never affected by gaps in the internal sessions sheet. The audit found 4 real official matches
-                (2026-02-01 vs Dignitas, 2026-03-07 vs Cloud9 Kia, 2026-05-17 vs Dignitas, 2026-05-30 vs
-                FlyQuest) that exist in GRID and on Leaguepedia but had zero row in the internal sessions
-                table — those games are now correctly included as Official here. It also found ~15 dates
-                where a GRID scrim and an internal Official session against a different opponent fell on the
-                same calendar day; those no longer bleed the Official label onto scrim games, since Official
-                never touches the date join anymore.
+                <strong>Performance Index methodology (added 2026-07-09):</strong> blends KDA, kill
+                participation, and net-worth differential vs the same-role opponent, each z-scored against
+                this player&rsquo;s own history on that champion (3+ games) or role (fallback). Blended
+                z-score maps to 0-100 via 50 + z&times;15, clamped. 50 is this player&rsquo;s own average —
+                never compare the number across players (A-R1). A low Baseline Confidence % means more of
+                this player&rsquo;s games are still on the shakier role-level fallback.
               </li>
               <li>
-                Green/Orange/Red (practice sub-type) still relies on a date join to the sessions table for
-                SCRIM games only, and coverage there is partial — most scrim dates simply aren&rsquo;t logged
-                internally with enough detail to match. A few matched scrim dates had more than one type
-                logged (e.g. Green then Orange same day) and are excluded as ambiguous rather than guessed.
+                Net-worth differential requires an opposing player logged at the same role in the same game —
+                a small number of games may be missing that opponent row in GRID and get a null diff, which
+                is excluded from that component rather than guessed.
+              </li>
+              <li>
+                No damage share, CS/min, or vision score in the current GRID Open Access tier — the Index
+                can&rsquo;t see those. No in-game timeline either, so &ldquo;endurance&rdquo; is measured by
+                game number within a series, not by minute within a game, and the Overextension table above
+                remains a coarse proxy, not real over-chasing detection. See reference_grid_api_tiers memory.
+              </li>
+              <li>
+                Official is taken directly from GRID&rsquo;s own ESPORTS flag (audited against Leaguepedia&rsquo;s
+                Sentinels match history 2026-07-09) — complete and not affected by gaps in the internal
+                sessions sheet. Green/Orange/Red still relies on a partial date join for SCRIM games only.
               </li>
               <li>
                 Separately (not fixable from this view): the internal sessions sheet&rsquo;s result for
-                2026-04-18 vs FlyQuest is wrong — logged as 3 losses, but GRID and Leaguepedia both confirm
-                Sentinels won that series 2-1. Doesn&rsquo;t affect the KDA/kill-participation numbers here
-                (those come from GRID&rsquo;s own per-game result), but the Monitoring Master Sheet&rsquo;s
-                team W-L record needs a manual correction.
+                2026-04-18 vs FlyQuest is wrong — logged as 3 losses; GRID and Leaguepedia both confirm a 2-1
+                win. Doesn&rsquo;t affect the numbers here, but the Monitoring Master Sheet needs a manual fix.
               </li>
               <li>
-                ESPORTS sample size is small across the whole roster (28 series total, since this roster
-                formed mid-January 2026 and has only played one full season plus Americas Cup / Esports
-                World Cup Qualifier). Any SCRIM-vs-ESPORTS gap should be read as directional, not conclusive.
+                ESPORTS sample size is small across the whole roster (28 series total — this roster formed
+                mid-January 2026). Any SCRIM-vs-ESPORTS or opponent-tier gap should be read as directional.
               </li>
               <li>
-                KDA and kill participation don&rsquo;t control for champion or matchup difficulty — always
-                check the champion shown on hover before reading a dip as a performance issue rather than a
-                hard matchup or off-meta pick.
-              </li>
-              <li>
-                Sleep figures use the same 3-night rolling methodology as Sleep Debt Analysis: most recent
-                logged nights, not strict calendar nights, with stale windows still included but not
-                specially flagged in this view (see Sleep Debt Analysis for that detail per player).
+                Opponent tier mapping only covers CLAUDE.md&rsquo;s ranked LCS opponents; Americas Cup /
+                regional opponents are grouped as Unranked rather than assigned a guessed tier.
               </li>
             </ul>
           </div>
