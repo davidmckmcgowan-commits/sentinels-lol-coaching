@@ -22,6 +22,13 @@ import {
 const SESSION_TYPE_ORDER = ['Green', 'Orange', 'Red', 'Official']
 const TIER_ORDER = ['Tier 5', 'Tier 4', 'Tier 3', 'Tier 2', 'Tier 1', 'Unranked']
 
+// GRID's native field calls stage matches "ESPORTS" — display it as "Official"
+// everywhere in the UI instead, since that's what it actually is to the coaching
+// staff. The underlying data field/join logic still uses GRID's 'ESPORTS' value.
+function seriesTypeDisplay(seriesType) {
+  return seriesType === 'ESPORTS' ? 'Official' : seriesType
+}
+
 // ---- Performance Index trend over time, dot colored by 3-night sleep band -
 
 function PerformanceTrendChart({ rows }) {
@@ -60,7 +67,12 @@ function PerformanceTrendChart({ rows }) {
                 const d = props.payload
                 const sleepBit = d.rollingAvgSleep != null ? `3-night sleep avg: ${d.rollingAvgSleep}h` : 'no 3-night sleep avg available'
                 const sameNight = d.sameNightSleepHours != null ? ` (same-night: ${d.sameNightSleepHours}h)` : ''
-                const typeBit = d.sessionTypeLabel ? `${d.seriesType} / ${d.sessionTypeLabel}` : `${d.seriesType} (unmatched to Green/Orange/Red/Official)`
+                const display = seriesTypeDisplay(d.seriesType)
+                const typeBit = d.seriesType === 'ESPORTS'
+                  ? 'Official'
+                  : d.sessionTypeLabel
+                    ? `${display} / ${d.sessionTypeLabel}`
+                    : `${display} (unmatched to Green/Orange/Red/Official)`
                 const baselineBit = d.baselineSource === 'role' ? ' — role-level baseline (low champion sample)' : ''
                 return [`${value} on ${d.champion} vs ${d.opponentName} — ${typeBit} — ${sleepBit}${sameNight}${baselineBit}`, 'Performance Index']
               }
@@ -257,7 +269,7 @@ export default function IndividualPlayerPerformance() {
               <div className="stat-card">
                 <div className="stat-label">Performance Index — Official</div>
                 <div className="stat-value">{avgOfficial != null ? avgOfficial.toFixed(1) : '—'}</div>
-                <div className="stat-sub">n={officialRows.length} ESPORTS games</div>
+                <div className="stat-sub">n={officialRows.length} Official games</div>
               </div>
               <div className="stat-card">
                 <div className="stat-label">Performance Index — Scrim</div>
@@ -314,12 +326,12 @@ export default function IndividualPlayerPerformance() {
           </div>
 
           <div className="panel">
-            <h2>SCRIM vs ESPORTS — {player}</h2>
+            <h2>SCRIM vs Official — {player}</h2>
             <p className="panel-caption">
-              GRID&rsquo;s native, always-available split — the primary read on whether performance holds up
-              on stage.
+              GRID&rsquo;s native, always-available split (GRID calls it ESPORTS internally; shown here as
+              Official, which is what it is) — the primary read on whether performance holds up on stage.
             </p>
-            <IndexGroupChart rows={scoredRows} keyFn={(r) => r.seriesType} sortOrder={['SCRIM', 'ESPORTS']} color="#5b8def" />
+            <IndexGroupChart rows={scoredRows} keyFn={(r) => seriesTypeDisplay(r.seriesType)} sortOrder={['SCRIM', 'Official']} color="#5b8def" />
           </div>
 
           <div className="panel">
@@ -431,7 +443,7 @@ export default function IndividualPlayerPerformance() {
                         <td>{r.opponentName}</td>
                         <td>{r.kills}/{r.deaths}/{r.assists}</td>
                         <td>{r.performanceIndex ?? '—'}</td>
-                        <td>{r.seriesType}{r.sessionTypeLabel ? ` / ${r.sessionTypeLabel}` : ''}</td>
+                        <td>{r.seriesType === 'ESPORTS' ? 'Official' : `${r.seriesType}${r.sessionTypeLabel ? ` / ${r.sessionTypeLabel}` : ''}`}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -473,8 +485,9 @@ export default function IndividualPlayerPerformance() {
                 win. Doesn&rsquo;t affect the numbers here, but the Monitoring Master Sheet needs a manual fix.
               </li>
               <li>
-                ESPORTS sample size is small across the whole roster (28 series total — this roster formed
-                mid-January 2026). Any SCRIM-vs-ESPORTS or opponent-tier gap should be read as directional.
+Official-match sample size is small across the whole roster (28 series total, GRID's ESPORTS
+                flag — this roster formed mid-January 2026). Any SCRIM-vs-Official or opponent-tier gap
+                should be read as directional.
               </li>
               <li>
                 Opponent tier mapping only covers CLAUDE.md&rsquo;s ranked LCS opponents; Americas Cup /
