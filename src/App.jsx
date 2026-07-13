@@ -7,6 +7,7 @@ import CorrelationExplorer from './views/CorrelationExplorer.jsx'
 import DataEntry from './views/DataEntry.jsx'
 import SleepDebtAnalysis from './views/SleepDebtAnalysis.jsx'
 import IndividualPlayerPerformance from './views/IndividualPlayerPerformance.jsx'
+import Interventions from './views/Interventions.jsx'
 
 const TABS = [
   { key: 'sessions', label: 'Team Session Dashboard' },
@@ -16,6 +17,7 @@ const TABS = [
   { key: 'entry', label: 'Data Entry' },
   { key: 'sleepDebt', label: 'Sleep Debt Analysis' },
   { key: 'individualPerf', label: 'Player Performance Dashboard' },
+  { key: 'interventions', label: 'Pre-Official Interventions' },
 ]
 
 function App() {
@@ -54,6 +56,7 @@ function App() {
         {activeTab === 'entry' && <DataEntry />}
         {activeTab === 'sleepDebt' && <SleepDebtAnalysis />}
         {activeTab === 'individualPerf' && <IndividualPlayerPerformance />}
+        {activeTab === 'interventions' && <Interventions />}
       </main>
     </>
   )

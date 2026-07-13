@@ -474,6 +474,50 @@ tbody tr:hover {
   border: 1px solid var(--win);
 }
 
+/* Interventions tab — one card per pre-official axis (sleep, vibe, champion
+   pool, etc.), color-coded by whether this specific player's own
+   official-scoped data confirms a real risk/benefit or hasn't yet. */
+.intervention-card {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-panel-alt);
+  padding: 12px 14px;
+  margin-bottom: 10px;
+}
+.intervention-card.risk { border-left-color: var(--red-flag); }
+.intervention-card.benefit { border-left-color: var(--win); }
+.intervention-card .intervention-tag {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+.intervention-card.risk .intervention-tag { color: var(--red-flag); }
+.intervention-card.benefit .intervention-tag { color: var(--win); }
+.intervention-card.unconfirmed .intervention-tag { color: var(--text-faint); }
+.intervention-card .intervention-title {
+  font-size: 14.5px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+.intervention-card .intervention-evidence {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+.intervention-card .intervention-how {
+  font-size: 12.5px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+.intervention-card .intervention-tdcs {
+  font-size: 12px;
+  color: var(--accent);
+  margin-top: 6px;
+}
+
 .reflection-feed {
   display: flex;
   flex-direction: column;
