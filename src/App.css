@@ -294,6 +294,16 @@ tbody tr:hover {
 
 .stat-card.flag-critical { border-color: var(--red-flag); background: rgba(224,82,74,0.08); }
 .stat-card.flag-amber { border-color: var(--amber); background: rgba(224,169,64,0.08); }
+.stat-card.flag-good { border-color: var(--win); background: rgba(58,167,109,0.08); }
+
+/* Plain-English verdict sentence for a pattern-mining tile (Evidence-Based
+   Patterns panel) — leads the tile so a coach can read it without parsing
+   CI/n/lift numbers first. Numbers stay available underneath in .stat-sub. */
+.stat-card .stat-verdict {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+}
 
 .chart-wrap {
   width: 100%;

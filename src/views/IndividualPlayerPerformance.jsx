@@ -480,7 +480,7 @@ export default function IndividualPlayerPerformance() {
     if (patternScope === 'official') return enrichedRows.filter((r) => r.seriesType === 'ESPORTS')
     return enrichedRows
   }, [enrichedRows, patternScope])
-  const conditionCards = useMemo(() => computeConditionCards(patternRows), [patternRows])
+  const conditionCards = useMemo(() => computeConditionCards(patternRows, undefined, player), [patternRows, player])
 
   const [matchIdx, setMatchIdx] = useState('')
   const matchOptions = useMemo(
@@ -687,11 +687,12 @@ export default function IndividualPlayerPerformance() {
             <h2>Evidence-Based Patterns — {player}</h2>
             <p className="panel-caption">
               &ldquo;When {player} does X, how often is that a good performance (Index &gt;50, above their own
-              average)?&rdquo; Every figure below is a Wilson confidence interval, not a bare percentage — a
-              pattern from 6 games looks very different from one built on 40. Conditions with fewer than 5
-              games on either side are marked insufficient rather than reported as if they were solid.
-              Officials and Scrims can behave differently, so pick a scope below rather than reading one
-              blended number.
+              average)?&rdquo; Each tile leads with a plain-English read — a green border means the gap is bigger
+              than the sample&rsquo;s own uncertainty and worth acting on; an amber border is the same but in the
+              wrong direction; no color means it could just be normal game-to-game noise, not a real pattern yet.
+              The numbers underneath (a 95% confidence interval, not a bare percentage) are there if you want to
+              check the tile&rsquo;s work. Officials and Scrims can behave differently, so pick a scope below
+              rather than reading one blended number.
             </p>
             <div className="player-tabs" style={{ marginBottom: 14 }}>
               <button type="button" className={`player-tab ${patternScope === 'all' ? 'active' : ''}`} onClick={() => setPatternScope('all')}>All Games</button>
@@ -707,17 +708,13 @@ export default function IndividualPlayerPerformance() {
             ) : (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 10 }}>
                 {conditionCards.cards.map((c) => (
-                  <div key={c.key} className={`stat-card ${!c.insufficientData && c.lift != null && Math.abs(c.lift) >= 15 ? (c.lift > 0 ? '' : 'flag-amber') : ''}`}>
+                  <div key={c.key} className={`stat-card ${c.insufficientData ? '' : c.significant ? (c.direction === 'better' ? 'flag-good' : 'flag-amber') : ''}`}>
                     <div className="stat-label">{c.label}</div>
-                    {c.insufficientData ? (
-                      <div className="stat-sub">Not enough games yet (n={c.n} vs n={c.nOther} — need 5+ on both sides)</div>
-                    ) : (
-                      <>
-                        <div className="stat-value" style={{ fontSize: 20 }}>{c.pGood}%</div>
-                        <div className="stat-sub">
-                          95% CI {c.ciLow}%–{c.ciHigh}% · n={c.n} · vs {c.baseline}% baseline ({c.lift > 0 ? '+' : ''}{c.lift} pts)
-                        </div>
-                      </>
+                    <div className="stat-verdict">{c.verdict}</div>
+                    {!c.insufficientData && (
+                      <div className="stat-sub">
+                        {c.pGood}% good · 95% CI {c.ciLow}–{c.ciHigh}% · n={c.n} · baseline {c.baseline}% ({c.lift > 0 ? '+' : ''}{c.lift} pts)
+                      </div>
                     )}
                   </div>
                 ))}
