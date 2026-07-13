@@ -16,7 +16,7 @@ import {
 } from '../lib/individualPerformance.js'
 import {
   buildOpponentNetWorthByGameRole, attachNetWorthDiff, computePerformanceIndex,
-  computeEnduranceByGameNumber, computeTiltRecovery,
+  computeEnduranceByGameNumber, computeEnduranceByDaySequence, attachDaySequence, computeTiltRecovery,
 } from '../lib/performanceIndex.js'
 import {
   computePotential, attachInterference, computeTdcsPatternFlags,
@@ -210,8 +210,11 @@ function InterferenceContextChart({ rows, tilt }) {
       { key: 'Official', ...bucket((r) => r.seriesType === 'ESPORTS') },
       { key: 'Low Sleep <6.5h', ...bucket((r) => r.rollingAvgSleep != null && r.rollingAvgSleep < 6.5) },
       { key: 'High Sleep 7.5h+', ...bucket((r) => r.rollingAvgSleep != null && r.rollingAvgSleep >= 7.5) },
-      { key: 'Game 1', ...bucket((r) => r.gameNumber === 1) },
-      { key: 'Game 3+', ...bucket((r) => r.gameNumber != null && r.gameNumber >= 3) },
+      // GRID's game_number is 0-indexed within a series: 0 = Game 1, 2 = Game 3.
+      { key: 'Series Game 1', ...bucket((r) => r.gameNumber === 0) },
+      { key: 'Series Game 3+', ...bucket((r) => r.gameNumber != null && r.gameNumber >= 2) },
+      { key: 'Day Game 1-2', ...bucket((r) => r.daySequence != null && r.daySequence <= 2) },
+      { key: 'Day Game 5+', ...bucket((r) => r.daySequence != null && r.daySequence >= 5) },
     ]
     if (tilt && !tilt.insufficientData && tilt.avgIndexAfterBadGame != null && tilt.overallAvgIndex != null) {
       out.push({
@@ -369,7 +372,7 @@ export default function IndividualPlayerPerformance() {
   const { data: allGridRows, error: gridError, loading: gridLoading } = useSupabaseQuery(
     () => supabase
       .from('grid_player_games')
-      .select('game_id, player, role, champion, kills, deaths, assists, net_worth, is_sentinels, team_name, grid_games(game_number, sentinels_won, sentinels_kills, opponent_kills, grid_series_id, grid_series(series_date, series_type, opponent_name, sentinels_won))')
+      .select('game_id, player, role, champion, kills, deaths, assists, net_worth, is_sentinels, team_name, grid_games(game_number, sentinels_won, sentinels_kills, opponent_kills, grid_series_id, grid_series(series_date, series_type, opponent_name, sentinels_won, start_time_scheduled))')
       .not('player', 'is', null),
     []
   )
@@ -422,6 +425,13 @@ export default function IndividualPlayerPerformance() {
 
   const overextensionFlags = useMemo(() => flagOverextensionCandidates(playerRows), [playerRows])
   const endurance = useMemo(() => computeEnduranceByGameNumber(playerRows), [playerRows])
+  // Day-sequence needs start_time_scheduled, which is only populated for series
+  // synced since 2026-07-12 — older rows simply won't get a daySequence value
+  // (excluded from this chart rather than guessed), so this fills in as more
+  // days get re-synced.
+  const rowsWithDaySequence = useMemo(() => attachDaySequence(playerRows), [playerRows])
+  const enduranceByDay = useMemo(() => computeEnduranceByDaySequence(rowsWithDaySequence), [rowsWithDaySequence])
+  const daySequenceCoverage = rowsWithDaySequence.filter((r) => r.daySequence != null).length
   const tilt = useMemo(() => computeTiltRecovery(playerRows), [playerRows])
 
   const loading = gridLoading || nightlyLoading || sessLoading || dailyLoading
@@ -438,8 +448,8 @@ export default function IndividualPlayerPerformance() {
 
   const potential = useMemo(() => computePotential(scoredRows), [scoredRows])
   const rowsWithInterference = useMemo(
-    () => attachInterference(playerRows, potential.potential),
-    [playerRows, potential.potential]
+    () => attachInterference(rowsWithDaySequence, potential.potential),
+    [rowsWithDaySequence, potential.potential]
   )
   const tdcsPatterns = useMemo(
     () => computeTdcsPatternFlags(rowsWithInterference.filter((r) => r.performanceIndex != null), tilt),
@@ -759,12 +769,45 @@ export default function IndividualPlayerPerformance() {
           </div>
 
           <div className="panel">
-            <h2>Endurance — Performance by Game Number in Series — {player}</h2>
+            <h2>Endurance — Performance by Position in the Day&rsquo;s Scrim Block — {player}</h2>
             <p className="panel-caption">
-              We don&rsquo;t have in-game timing (that&rsquo;s GRID&rsquo;s paid Series Events tier — see
-              Coverage Caveats), so this is the closest available proxy for &ldquo;do they fade as a series
-              goes on&rdquo;: average Performance Index by Game 1 vs Game 2 vs Game 3+ across all of{' '}
-              {player}&rsquo;s series.
+              The real fade signal: Sentinels typically play 5-8 (sometimes more) consecutive BO1s in a day
+              against the same or rotating opponents. This orders every game {player} played on a given date
+              by its actual start time (from GRID&rsquo;s schedule data) and averages Performance Index by
+              1st game of the day, 2nd, 3rd, 4th, 5th+. Coverage: {daySequenceCoverage} of {playerRows.length} games
+              have a timestamp so far — this fills in as more history gets re-synced with real GRID timestamps
+              (see Coverage Caveats).
+            </p>
+            <div className="chart-wrap">
+              {enduranceByDay.every((e) => e.n === 0) ? (
+                <div className="empty-state">No day-sequence data yet — needs games synced with GRID start-time data.</div>
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={enduranceByDay} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#2a2f3a" />
+                    <XAxis dataKey="key" stroke="#9aa1ae" fontSize={11} />
+                    <YAxis domain={[0, 100]} stroke="#9aa1ae" fontSize={12} label={{ value: 'Avg Index', angle: -90, position: 'insideLeft', fill: '#676f7d', fontSize: 11 }} />
+                    <ReferenceLine y={50} stroke="#676f7d" strokeDasharray="4 4" />
+                    <Tooltip
+                      contentStyle={{ background: '#171a21', border: '1px solid #2a2f3a', fontSize: 12 }}
+                      formatter={(value, name, props) => [`${value} avg Index (n=${props.payload.n})`, 'Avg Index']}
+                    />
+                    <Bar dataKey="avg" radius={[4, 4, 0, 0]} fill="#3aa76d">
+                      <LabelList dataKey="avg" position="top" formatter={(v, i) => `${v ?? ''} (n=${enduranceByDay[i]?.n ?? ''})`} fill="#e6e8ec" fontSize={11} />
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+          </div>
+
+          <div className="panel">
+            <h2>Endurance — Performance by Game Number Within a Series — {player}</h2>
+            <p className="panel-caption">
+              Secondary lens: fade within a single BO3+ series (Officials only — 97.6% of scrims are
+              single-game BO1s, so they only ever populate &ldquo;Game 1&rdquo; here; use the day-sequence
+              chart above for scrim fade). Average Performance Index by Game 1 vs Game 2 vs Game 3+ within
+              the same series.
             </p>
             <div className="chart-wrap">
               {endurance.every((e) => e.n === 0) ? (
@@ -884,9 +927,24 @@ export default function IndividualPlayerPerformance() {
               </li>
               <li>
                 No damage share, CS/min, or vision score in the current GRID Open Access tier — the Index
-                can&rsquo;t see those. No in-game timeline either, so &ldquo;endurance&rdquo; is measured by
-                game number within a series, not by minute within a game, and the Overextension table above
-                remains a coarse proxy, not real over-chasing detection. See reference_grid_api_tiers memory.
+                can&rsquo;t see those. No in-game timeline either, so endurance is measured between whole
+                games, not by minute within a game, and the Overextension table above remains a coarse
+                proxy, not real over-chasing detection. See reference_grid_api_tiers memory.
+              </li>
+              <li>
+                <strong>Game-numbering bug fixed (2026-07-12):</strong> GRID numbers games 0-indexed within a
+                series (a real BO3 came back numbered 0, 1, 2). The within-series Endurance chart and the
+                Series Opener / Late Series conditions in Evidence-Based Patterns previously treated 0 as
+                falsy/missing and silently dropped it — since 97.6% of series are single-game BO1s, that was
+                nearly every scrim&rsquo;s only game. Both are now corrected to GRID&rsquo;s real numbering.
+              </li>
+              <li>
+                <strong>Day-sequence Endurance added (2026-07-12):</strong> Sentinels play most scrims as 5-8+
+                consecutive BO1s in a day, not multi-game series — so within-series game number can&rsquo;t
+                see fade across that block at all (every BO1 is &ldquo;Game 1&rdquo;). The new chart above
+                orders games chronologically within a calendar day using GRID&rsquo;s start_time_scheduled,
+                which is only populated for series synced since this date — older history will fill in as
+                it gets re-synced via the daily GRID import.
               </li>
               <li>
                 Official is taken directly from GRID&rsquo;s own ESPORTS flag (audited against Leaguepedia&rsquo;s

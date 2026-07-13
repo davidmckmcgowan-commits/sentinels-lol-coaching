@@ -132,7 +132,11 @@ export function buildPlayerPerformanceSeries({ rawRows, player, sleepByPlayer, s
         gameId: r.game_id ?? null,
         seriesId: r.grid_games?.grid_series_id ?? null,
         netWorth: r.net_worth ?? null,
+        // GRID numbers games 0-indexed WITHIN a series (confirmed via a real
+        // BO3: games come back numbered 0, 1, 2). This is "game 1 of the
+        // series" = 0, not a missing/default value — do not treat 0 as falsy.
         gameNumber: r.grid_games?.game_number ?? null,
+        startTimeScheduled: series?.start_time_scheduled ?? null,
         sentinelsWonGame: r.grid_games?.sentinels_won ?? null,
         opponentName: series?.opponent_name ?? null,
         seriesType: series?.series_type ?? null, // SCRIM | ESPORTS (native GRID field)

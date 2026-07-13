@@ -130,8 +130,11 @@ export function computeTdcsPatternFlags(rows, tiltResult) {
   }
 
   // --- Late-series fatigue pattern -> Protocol 4/5 -------------------------
-  const game1Rows = withInterference.filter((r) => r.gameNumber === 1)
-  const lateGameRows = withInterference.filter((r) => r.gameNumber != null && r.gameNumber >= 3)
+  // GRID's game_number is 0-indexed within a series (0 = Game 1) — fixed
+  // 2026-07-12. Small sample: only meaningful for the ~17 multi-game (BO3+)
+  // series, since 97.6% of scrims are single-game BO1s.
+  const game1Rows = withInterference.filter((r) => r.gameNumber === 0)
+  const lateGameRows = withInterference.filter((r) => r.gameNumber != null && r.gameNumber >= 2)
   if (game1Rows.length >= MIN_GAMES_FOR_CONTEXT && lateGameRows.length >= MIN_GAMES_FOR_CONTEXT) {
     const game1Avg = mean(game1Rows.map((r) => r.interference))
     const lateGameAvg = mean(lateGameRows.map((r) => r.interference))
@@ -145,6 +148,31 @@ export function computeTdcsPatternFlags(rows, tiltResult) {
         n: lateGameRows.length,
         summary: `Interference runs ${Math.round(gap * 10) / 10} pts higher in Game 3+ of a series vs Game 1 (n=${lateGameRows.length} late games) — not explained by worse sleep on those days.`,
         evidence: 'Supporting: frontopolar tDCS extends vigilance/attention under sustained load for up to ~6 hours post-session (S018/S019); dual-site protocol also studied for back-to-back match-day recovery (S012/S026). This is about sustaining attention under fatigue, not masking sleep debt.',
+      })
+    }
+  }
+
+  // --- Late-in-day fatigue pattern -> Protocol 4/5 (day-sequence lens) -----
+  // Same idea, but using position within a whole DAY'S block of consecutive
+  // BO1 scrims (via daySequence, added 2026-07-12) rather than game number
+  // within a single series — the lens that actually applies to how Sentinels
+  // scrim (5-8+ BO1s back to back), where the series-based check above has
+  // almost no sample.
+  const dayEarlyRows = withInterference.filter((r) => r.daySequence != null && r.daySequence <= 2)
+  const dayLateRows = withInterference.filter((r) => r.daySequence != null && r.daySequence >= 5)
+  if (dayEarlyRows.length >= MIN_GAMES_FOR_CONTEXT && dayLateRows.length >= MIN_GAMES_FOR_CONTEXT) {
+    const dayEarlyAvg = mean(dayEarlyRows.map((r) => r.interference))
+    const dayLateAvg = mean(dayLateRows.map((r) => r.interference))
+    const gap = dayLateAvg - dayEarlyAvg
+    const dayLateLowSleepShare = dayLateRows.filter((r) => r.rollingAvgSleep != null && r.rollingAvgSleep < 6.5).length / dayLateRows.length
+    if (gap >= FLAG_THRESHOLD && dayLateLowSleepShare < 0.5) {
+      flags.push({
+        type: 'late_in_day_fatigue',
+        protocol: 'Protocol 4/5 — Frontopolar endurance / post-match recovery',
+        magnitude: Math.round(gap * 10) / 10,
+        n: dayLateRows.length,
+        summary: `Interference runs ${Math.round(gap * 10) / 10} pts higher on the 5th+ game of a day's scrim block vs the 1st-2nd (n=${dayLateRows.length} late-block games) — not explained by worse sleep on those days.`,
+        evidence: 'Supporting: frontopolar tDCS extends vigilance/attention under sustained load for up to ~6 hours post-session (S018/S019). Requires GRID start-time data, only populated for series synced since 2026-07-12 — sample will grow as history gets re-synced.',
       })
     }
   }

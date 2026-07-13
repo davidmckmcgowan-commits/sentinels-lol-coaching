@@ -69,17 +69,23 @@ export function attachNetWorthDiff(rows, opponentNetWorthByGameRole) {
 
 // Build per-player baselines, preferring champion-level (n >= minChampionGames)
 // and falling back to role-level.
+//
+// BUG FIX (2026-07-13): the role-level fallback used to pool ALL of a player's
+// games at that role, including games on champions that already qualified for
+// their OWN champion baseline. That inflates the role baseline's mean with the
+// player's best/most-practiced picks, which in turn makes any thin-sample or
+// off-meta champion look artificially much worse by comparison than it really
+// is (the "comfort-pick collapse" finding from the 2026-07-12 pattern-mining
+// pass is real in direction, but was overstated in magnitude by this). Fixed
+// by excluding champion-baseline-qualifying games from the role pool, so the
+// role baseline now represents "this player's typical game on an unfamiliar
+// pick at this role" rather than being dragged up by their mains.
 export function computeBaselines(rows, { minChampionGames = 3 } = {}) {
   const byChampion = {}
-  const byRole = {}
   for (const r of rows) {
     if (r.champion) {
       if (!byChampion[r.champion]) byChampion[r.champion] = []
       byChampion[r.champion].push(r)
-    }
-    if (r.role) {
-      if (!byRole[r.role]) byRole[r.role] = []
-      byRole[r.role].push(r)
     }
   }
 
@@ -99,8 +105,20 @@ export function computeBaselines(rows, { minChampionGames = 3 } = {}) {
   }
 
   const baselines = { champion: {}, role: {} }
+  const qualifyingChampions = new Set()
   for (const [champ, group] of Object.entries(byChampion)) {
-    if (group.length >= minChampionGames) baselines.champion[champ] = buildStats(group)
+    if (group.length >= minChampionGames) {
+      baselines.champion[champ] = buildStats(group)
+      qualifyingChampions.add(champ)
+    }
+  }
+
+  const byRole = {}
+  for (const r of rows) {
+    if (!r.role) continue
+    if (r.champion && qualifyingChampions.has(r.champion)) continue // already has its own baseline — don't let it inflate the role fallback
+    if (!byRole[r.role]) byRole[r.role] = []
+    byRole[r.role].push(r)
   }
   for (const [role, group] of Object.entries(byRole)) {
     baselines.role[role] = buildStats(group)
@@ -142,19 +160,71 @@ export function computePerformanceIndex(rows, { minChampionGames = 3 } = {}) {
   })
 }
 
-// ---- Endurance: performance by game number within a series ----------------
-// True within-game fade (laning vs late-game) needs GRID's paid Series Events
-// timeline, which we don't have. Game-number-within-series is the closest
-// available proxy for "do they fade as a series goes on."
+// ---- Endurance, lens 1: performance by game number WITHIN A SERIES ---------
+// Only a meaningful fade signal for multi-game series (BO3+ Officials — ~17
+// series total). 97.6% of Sentinels series are single-game BO1 scrims, so
+// their one game is always "Game 1 of the series" here; see
+// computeEnduranceByDaySequence below for the signal that actually matters
+// for scrim blocks.
+//
+// BUG FIX (2026-07-12): GRID numbers games 0-INDEXED within a series (confirmed
+// via a real BO3 — games came back numbered 0, 1, 2, each with distinct stats).
+// This function previously did `!r.gameNumber`, which is true for 0 and was
+// silently dropping ~97% of games (every BO1's only game) from every bucket —
+// that's why Endurance looked like "not enough data" even though the data
+// existed. Also relabeled buckets to real 1-indexed game numbers so "Game 1"
+// means what a coach means by it.
 export function computeEnduranceByGameNumber(rows) {
   const buckets = { 1: [], 2: [], '3+': [] }
   for (const r of rows) {
-    if (r.performanceIndex == null || !r.gameNumber) continue
-    const key = r.gameNumber >= 3 ? '3+' : String(r.gameNumber)
+    if (r.performanceIndex == null || r.gameNumber == null) continue
+    const displayGameNumber = r.gameNumber + 1 // GRID's 0 = Game 1, 1 = Game 2, ...
+    const key = displayGameNumber >= 3 ? '3+' : String(displayGameNumber)
     buckets[key].push(r.performanceIndex)
   }
   return ['1', '2', '3+'].map((key) => ({
-    key: `Game ${key}`,
+    key: `Game ${key} of series`,
+    avg: buckets[key].length > 0 ? Math.round(mean(buckets[key]) * 10) / 10 : null,
+    n: buckets[key].length,
+  }))
+}
+
+// ---- Endurance, lens 2: performance by position in that DAY'S scrim block -
+// The signal that actually answers "do they start strong and fade": Sentinels
+// typically play 5-8 (sometimes up to 13) consecutive BO1s in a day against
+// the same or rotating opponents. Order within a series can't see that at all
+// (every BO1 "is" game 1). This buckets by chronological order across ALL of
+// that player's games on a given calendar date, using GRID's
+// start_time_scheduled (added 2026-07-12 — previously only the date was
+// stored, not the time, even though GRID's own portal always had it).
+// Rows without a timestamp (games logged before this field existed and not
+// yet re-synced) are excluded rather than guessed at.
+export function attachDaySequence(rows) {
+  const byDate = {}
+  for (const r of rows) {
+    if (!r.date || !r.startTimeScheduled) continue
+    if (!byDate[r.date]) byDate[r.date] = []
+    byDate[r.date].push(r)
+  }
+  for (const games of Object.values(byDate)) {
+    games.sort((a, b) => (a.startTimeScheduled < b.startTimeScheduled ? -1 : a.startTimeScheduled > b.startTimeScheduled ? 1 : 0))
+  }
+  const seqByRowRef = new Map()
+  for (const games of Object.values(byDate)) {
+    games.forEach((r, idx) => seqByRowRef.set(r, idx + 1))
+  }
+  return rows.map((r) => ({ ...r, daySequence: seqByRowRef.has(r) ? seqByRowRef.get(r) : null }))
+}
+
+export function computeEnduranceByDaySequence(rows) {
+  const withSeq = rows.filter((r) => r.performanceIndex != null && r.daySequence != null)
+  const buckets = { 1: [], 2: [], 3: [], 4: [], '5+': [] }
+  for (const r of withSeq) {
+    const key = r.daySequence >= 5 ? '5+' : String(r.daySequence)
+    buckets[key].push(r.performanceIndex)
+  }
+  return ['1', '2', '3', '4', '5+'].map((key) => ({
+    key: `Game ${key} of day`,
     avg: buckets[key].length > 0 ? Math.round(mean(buckets[key]) * 10) / 10 : null,
     n: buckets[key].length,
   }))

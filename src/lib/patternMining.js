@@ -43,8 +43,17 @@ export function buildStandardConditions() {
     { key: 'low_vibe', label: 'Low Vibe (≤5)', predicate: (r) => r.vibe != null && r.vibe <= 5 },
     { key: 'tough_matchup', label: 'Tough Matchup (Opponent Tier 4-5)', predicate: (r) => { const t = r.tier; return t === 4 || t === 5 } },
     { key: 'easier_matchup', label: 'Easier Matchup (Tier 1-3 / Unranked)', predicate: (r) => { const t = r.tier; return t == null || t <= 3 } },
-    { key: 'series_opener', label: 'Series Opener (Game 1)', predicate: (r) => r.gameNumber === 1 },
-    { key: 'late_series', label: 'Late Series (Game 3+)', predicate: (r) => r.gameNumber != null && r.gameNumber >= 3 },
+    // GRID numbers games 0-indexed WITHIN a series (confirmed via a real BO3:
+    // games came back numbered 0, 1, 2) — Game 1 of a series is gameNumber===0,
+    // not 1. Fixed 2026-07-12; this previously never matched a real series
+    // opener. Only meaningful for multi-game series (BO3+ Officials).
+    { key: 'series_opener', label: 'Series Opener (Game 1 of a BO3+)', predicate: (r) => r.gameNumber === 0 },
+    { key: 'late_series', label: 'Late Series (Game 3+ of a BO3+)', predicate: (r) => r.gameNumber != null && r.gameNumber >= 2 },
+    // Position within that day's block of consecutive scrims (day-sequence,
+    // via startTimeScheduled) — the fade signal that actually applies to BO1
+    // scrim blocks, where every game is technically "series game 1" above.
+    { key: 'early_in_day', label: "Early in the Day's Scrim Block (1st-2nd game)", predicate: (r) => r.daySequence != null && r.daySequence <= 2 },
+    { key: 'late_in_day', label: "Late in the Day's Scrim Block (5th+ game)", predicate: (r) => r.daySequence != null && r.daySequence >= 5 },
     { key: 'after_rough_game', label: 'Right After a Rough Game (same series)', predicate: (r) => r.priorGameGood === false },
     { key: 'after_good_game', label: 'Right After a Good Game (same series)', predicate: (r) => r.priorGameGood === true },
     { key: 'comfort_pick', label: 'Comfort Pick (3+ games on this champion)', predicate: (r) => r.baselineSource === 'champion' },
