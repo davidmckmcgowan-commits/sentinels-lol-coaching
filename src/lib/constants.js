@@ -2,6 +2,16 @@
 
 export const ROSTER_PLAYERS = ['Impact', 'HamBak', 'DARKWINGS', 'Huhi', 'Rahel']
 
+// David's Split 2 practice block started 2026-07-07 (before that the roster
+// was on break — this is also why there's a real, expected data gap through
+// June, not a logging failure). Everything through 2026-07-06 is treated as
+// a frozen "baseline" for champion/role Performance Index baselines; games
+// from this date onward are the "current season" being tracked forward
+// against that fixed baseline. See computeBaselines' baselineCutoffDate
+// option in performanceIndex.js.
+export const SEASON_CUTOFF_DATE = '2026-07-06'
+export const SEASON_CUTOFF_LABEL = 'Split 2 practice (started Jul 7, 2026)'
+
 export const SESSION_TYPES = ['Green', 'Orange', 'Red', 'Official']
 
 export const RESULTS = ['Win', 'Loss']

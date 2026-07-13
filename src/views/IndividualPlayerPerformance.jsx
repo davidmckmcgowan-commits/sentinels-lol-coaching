@@ -7,7 +7,7 @@ import { supabase } from '../lib/supabaseClient.js'
 import { useSupabaseQuery, fetchAllRows } from '../lib/useSupabaseQuery.js'
 import {
   ROSTER_PLAYERS, SLEEP_DEBT_BANDS, sleepDebtColor, formatDate, bucketize,
-  opponentTier, average,
+  opponentTier, average, SEASON_CUTOFF_DATE,
 } from '../lib/constants.js'
 import { groupByPlayer } from '../lib/sleepDebt.js'
 import {
@@ -426,7 +426,11 @@ export default function IndividualPlayerPerformance() {
     if (!allGridRows) return []
     const base = buildPlayerPerformanceSeries({ rawRows: sentinelsRawRows, player, sleepByPlayer, sessionTypeByDate })
     const withNetWorth = attachNetWorthDiff(base, opponentNetWorthByGameRole)
-    return computePerformanceIndex(withNetWorth)
+    // Baselines frozen to the pre-Split-2 body of work (through SEASON_CUTOFF_DATE,
+    // see constants.js) so this stays consistent with the Interventions tab's
+    // Current Season Tracking panel — same games should score the same
+    // Performance Index everywhere in the app.
+    return computePerformanceIndex(withNetWorth, { baselineCutoffDate: SEASON_CUTOFF_DATE })
   }, [allGridRows, sentinelsRawRows, player, sleepByPlayer, sessionTypeByDate, opponentNetWorthByGameRole])
 
   const overextensionFlags = useMemo(() => flagOverextensionCandidates(playerRows), [playerRows])

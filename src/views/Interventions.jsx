@@ -1,14 +1,16 @@
 import { useMemo, useState } from 'react'
 import { supabase } from '../lib/supabaseClient.js'
 import { useSupabaseQuery, fetchAllRows } from '../lib/useSupabaseQuery.js'
-import { ROSTER_PLAYERS, formatDate, opponentTier } from '../lib/constants.js'
+import { ROSTER_PLAYERS, SEASON_CUTOFF_DATE, SEASON_CUTOFF_LABEL, formatDate, opponentTier } from '../lib/constants.js'
 import { groupByPlayer } from '../lib/sleepDebt.js'
 import { buildSessionTypeByDate, buildPlayerPerformanceSeries } from '../lib/individualPerformance.js'
 import {
   buildOpponentNetWorthByGameRole, attachNetWorthDiff, computePerformanceIndex, attachDaySequence,
 } from '../lib/performanceIndex.js'
 import { attachPriorGameGood, computeConditionCards } from '../lib/patternMining.js'
-import { computeCurrentStatus, buildStandingProtocol } from '../lib/interventions.js'
+import {
+  computeCurrentStatus, buildStandingProtocol, computeTeamActivationSummary, computeCurrentSeasonSummary,
+} from '../lib/interventions.js'
 
 function todayDateString() {
   return new Date().toISOString().slice(0, 10)
@@ -114,7 +116,10 @@ export default function Interventions() {
     for (const p of ROSTER_PLAYERS) {
       const base = buildPlayerPerformanceSeries({ rawRows: sentinelsRawRows, player: p, sleepByPlayer, sessionTypeByDate })
       const withNetWorth = attachNetWorthDiff(base, opponentNetWorthByGameRole)
-      const scored = computePerformanceIndex(withNetWorth)
+      // Baselines frozen to the pre-Split-2 body of work (see constants.js) —
+      // Current Season Tracking below depends on this NOT including the
+      // current-season rows it's being compared against.
+      const scored = computePerformanceIndex(withNetWorth, { baselineCutoffDate: SEASON_CUTOFF_DATE })
       out[p] = attachDaySequence(scored)
     }
     return out
@@ -159,8 +164,110 @@ export default function Interventions() {
 
   const confirmedRiskCount = standingProtocol.filter((i) => i.status === 'confirmed-risk').length
 
+  const teamActivation = useMemo(() => computeTeamActivationSummary(scoredRowsByPlayer), [scoredRowsByPlayer])
+  const currentSeason = useMemo(() => computeCurrentSeasonSummary(scoredRowsByPlayer, SEASON_CUTOFF_DATE), [scoredRowsByPlayer])
+
   return (
     <div>
+      {!loading && !error && (
+        <div className="panel">
+          <h2>Current Season Tracking — {SEASON_CUTOFF_LABEL}</h2>
+          <p className="panel-caption">
+            Champion/role baselines below are frozen to games through {formatDate(SEASON_CUTOFF_DATE)} (everything
+            before Split 2 practice resumed) — every game from {formatDate(SEASON_CUTOFF_DATE)} onward is scored
+            against that fixed reference rather than a baseline that keeps absorbing the very games being judged.
+            That's the honest way to answer &ldquo;is potential increasing right now&rdquo; instead of a number
+            that can never move much because the yardstick keeps redrawing itself around it. Samples since Jul 7
+            are still small, so read these as early reads, not verdicts.
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Player</th>
+                <th>Baseline (through {formatDate(SEASON_CUTOFF_DATE)})</th>
+                <th>Current Season (since Jul 7)</th>
+                <th>Change</th>
+              </tr>
+            </thead>
+            <tbody>
+              {currentSeason.map((p) => (
+                <tr key={p.player}>
+                  <td>{p.player}</td>
+                  <td>{p.baselinePGood != null ? `${p.baselinePGood}% good (n=${p.baselineN})` : `n=${p.baselineN}`}</td>
+                  <td>{p.currentPGood != null ? `${p.currentPGood}% good (${p.currentLow}–${p.currentHigh}%, n=${p.currentN})` : `n=${p.currentN}, not enough data yet`}</td>
+                  <td>{p.delta != null ? `${p.delta > 0 ? '+' : ''}${p.delta} pts` : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {!loading && !error && (
+        <div className="panel">
+          <h2>Team-Wide: Practice Activation</h2>
+          <p className="panel-caption">
+            A process-level finding (2026-07-13), not a per-player read — this showed up the same way for
+            everyone. Every player scores dramatically better in Officials than Scrims on their own history, and
+            it isn&rsquo;t explained by champion-pool selection alone, opponent tier, or the internal
+            Green/Orange/Red intensity label (all three were tested and ruled out or only partial). That points
+            away from stage-day &ldquo;interference&rdquo; (choking) and toward routine practice under-activating
+            the same potential real stakes bring out. Separately, month-by-month Scrim performance rises through
+            the Lock-In (Jan 24-Mar 1) and Americas Cup (Mar 4-8) window and fully reverts to January-level
+            baseline by May, in lockstep across the roster — performance so far looks event-driven rather than a
+            durable, compounding improvement. There&rsquo;s also a complete data gap for June, so treat the most
+            recent numbers as provisional until that&rsquo;s backfilled.
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Player</th>
+                <th>Official — % good (95% CI, n)</th>
+                <th>Scrim — % good (95% CI, n)</th>
+                <th>Gap</th>
+              </tr>
+            </thead>
+            <tbody>
+              {teamActivation.perPlayer.map((p) => (
+                <tr key={p.player}>
+                  <td>{p.player}</td>
+                  <td>{p.officialPGood != null ? `${p.officialPGood}% (${p.officialLow}–${p.officialHigh}%, n=${p.officialN})` : `n=${p.officialN}, not enough data`}</td>
+                  <td>{p.scrimPGood != null ? `${p.scrimPGood}% (${p.scrimLow}–${p.scrimHigh}%, n=${p.scrimN})` : `n=${p.scrimN}, not enough data`}</td>
+                  <td>{p.gap != null ? `${p.gap > 0 ? '+' : ''}${p.gap} pts` : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="panel-caption" style={{ marginTop: 14 }}>
+            Does the Green/Orange/Red practice-intensity label actually predict anything? Pooled across the whole
+            roster (a process check, not a player comparison):
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Session Type</th>
+                <th>% good (95% CI, n)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {teamActivation.sessionTypeRows.map((s) => (
+                <tr key={s.label}>
+                  <td>{s.label}</td>
+                  <td>{s.pGood != null ? `${s.pGood}% (${s.low}–${s.high}%, n=${s.n})` : `n=${s.n}, not enough data`}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="panel-caption" style={{ marginTop: 10 }}>
+            If these three rows come back statistically flat, that&rsquo;s the finding: the label isn&rsquo;t
+            currently producing a measurable difference in output, which is worth an audit of what actually
+            happens differently in a Red session versus a Green one. The practical lever this points to is
+            building real stakes into routine practice (internal scoring, consequences, standings) rather than
+            relying on the event calendar to supply intensity.
+          </p>
+        </div>
+      )}
+
       <div className="player-tabs">
         {ROSTER_PLAYERS.map((p) => (
           <button key={p} type="button" className={`player-tab ${player === p ? 'active' : ''}`} onClick={() => setPlayer(p)}>

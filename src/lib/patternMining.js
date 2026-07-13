@@ -18,7 +18,8 @@ const MIN_N_PER_SIDE = 5
 
 // Wilson score interval for a binomial proportion — better behaved than the
 // normal approximation when n is small, which is the normal case here.
-function wilsonInterval(successes, n, z = 1.96) {
+// Exported so other modules (interventions.js) don't have to reimplement it.
+export function wilsonInterval(successes, n, z = 1.96) {
   if (n === 0) return { point: null, low: null, high: null }
   const pHat = successes / n
   const denom = 1 + (z * z) / n

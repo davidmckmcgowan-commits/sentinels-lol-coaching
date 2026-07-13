@@ -16,6 +16,7 @@
 
 import { rollingAveragesAsOf } from './sleepDebt.js'
 import { SLEEP_DEBT_BANDS, sleepDebtColor } from './constants.js'
+import { wilsonInterval } from './patternMining.js'
 
 // From CLAUDE.md's tDCS priority list (as of 2026-07-12). TBD for the rest of
 // the roster pending first sessions — don't invent an assignment for them.
@@ -183,4 +184,83 @@ export function computeCurrentStatus({ player, sleepByPlayer, dailyEntries, scor
   }
 
   return { sleep, vibe, championPool }
+}
+
+// Team-wide "Practice Activation" summary (2026-07-13 finding). Distinct from
+// everything else in this file: this is NOT a per-player risk/benefit read.
+// It's a process-level finding that showed up the same way for every player,
+// so it's surfaced once, above the player tabs, rather than duplicated five
+// times. See project_lol_coaching_app memory for the full write-up and the
+// Lock-In (Jan 24-Mar 1 2026) / Americas Cup (Mar 4-8 2026) date cross-check.
+//
+// `scoredRowsByPlayer` is { [player]: rows[] } where each row already has
+// performanceIndex, seriesType ('SCRIM'|'ESPORTS'), sessionTypeLabel
+// (Green/Orange/Red/Mixed/Official), and sessionTypeAmbiguous.
+export function computeTeamActivationSummary(scoredRowsByPlayer) {
+  const perPlayer = Object.entries(scoredRowsByPlayer).map(([player, rows]) => {
+    const scored = (rows || []).filter((r) => r.performanceIndex != null)
+    const official = scored.filter((r) => r.seriesType === 'ESPORTS')
+    const scrim = scored.filter((r) => r.seriesType === 'SCRIM')
+    const officialCi = wilsonInterval(official.filter((r) => r.performanceIndex > 50).length, official.length)
+    const scrimCi = wilsonInterval(scrim.filter((r) => r.performanceIndex > 50).length, scrim.length)
+    return {
+      player,
+      officialN: official.length,
+      officialPGood: officialCi.point,
+      officialLow: officialCi.low,
+      officialHigh: officialCi.high,
+      scrimN: scrim.length,
+      scrimPGood: scrimCi.point,
+      scrimLow: scrimCi.low,
+      scrimHigh: scrimCi.high,
+      gap: officialCi.point != null && scrimCi.point != null ? Math.round((officialCi.point - scrimCi.point) * 10) / 10 : null,
+    }
+  })
+
+  // Whether the internal Green/Orange/Red practice-intensity LABEL itself
+  // predicts anything — a team-level process question about how practice is
+  // run, not a per-player comparison, so pooling everyone's rows here doesn't
+  // violate A-R1 (nobody is being ranked against anybody).
+  const allScrimRows = Object.values(scoredRowsByPlayer)
+    .flat()
+    .filter((r) => r.performanceIndex != null && r.seriesType === 'SCRIM' && !r.sessionTypeAmbiguous)
+  const bySessionType = {}
+  for (const r of allScrimRows) {
+    if (!r.sessionTypeLabel || r.sessionTypeLabel.startsWith('Mixed')) continue
+    if (!bySessionType[r.sessionTypeLabel]) bySessionType[r.sessionTypeLabel] = []
+    bySessionType[r.sessionTypeLabel].push(r)
+  }
+  const sessionTypeRows = ['Green', 'Orange', 'Red'].map((label) => {
+    const rows = bySessionType[label] || []
+    const ci = wilsonInterval(rows.filter((r) => r.performanceIndex > 50).length, rows.length)
+    return { label, n: rows.length, pGood: ci.point, low: ci.low, high: ci.high }
+  })
+
+  return { perPlayer, sessionTypeRows }
+}
+
+// Is Split 2 practice (2026-07-07 onward) actually better than the frozen
+// baseline, or does it just look that way because the baseline itself keeps
+// absorbing the newest games? Requires rows to have been scored with
+// computePerformanceIndex's baselineCutoffDate option (see performanceIndex.js)
+// — otherwise this is comparing current-season rows against a baseline that
+// includes them, which is exactly the circularity this is meant to avoid.
+export function computeCurrentSeasonSummary(scoredRowsByPlayer, cutoffDate) {
+  return Object.entries(scoredRowsByPlayer).map(([player, rows]) => {
+    const scored = (rows || []).filter((r) => r.performanceIndex != null)
+    const baseline = scored.filter((r) => r.date && r.date <= cutoffDate)
+    const current = scored.filter((r) => r.date && r.date > cutoffDate)
+    const baselineCi = wilsonInterval(baseline.filter((r) => r.performanceIndex > 50).length, baseline.length)
+    const currentCi = wilsonInterval(current.filter((r) => r.performanceIndex > 50).length, current.length)
+    return {
+      player,
+      baselineN: baseline.length,
+      baselinePGood: baselineCi.point,
+      currentN: current.length,
+      currentPGood: currentCi.point,
+      currentLow: currentCi.low,
+      currentHigh: currentCi.high,
+      delta: baselineCi.point != null && currentCi.point != null ? Math.round((currentCi.point - baselineCi.point) * 10) / 10 : null,
+    }
+  })
 }

@@ -80,9 +80,20 @@ export function attachNetWorthDiff(rows, opponentNetWorthByGameRole) {
 // by excluding champion-baseline-qualifying games from the role pool, so the
 // role baseline now represents "this player's typical game on an unfamiliar
 // pick at this role" rather than being dragged up by their mains.
-export function computeBaselines(rows, { minChampionGames = 3 } = {}) {
+// SEASON BASELINE FREEZE (2026-07-13): David's Split 2 practice block started
+// 2026-07-07 (before that the roster was on break) — everything before that
+// is meant to be a stable "baseline" reference, with games from 2026-07-07
+// onward tracked forward as the new season against that fixed baseline. Pass
+// `baselineCutoffDate` (a date string, e.g. SEASON_CUTOFF_DATE from
+// constants.js) to restrict the baseline-BUILDING pool to rows on or before
+// that date. Every row passed to computePerformanceIndex — baseline-period
+// AND current-season — still gets SCORED against that frozen baseline; only
+// which rows are allowed to influence the mean/sd changes. Omit the option
+// to keep the original all-history-builds-its-own-baseline behavior.
+export function computeBaselines(rows, { minChampionGames = 3, baselineCutoffDate = null } = {}) {
+  const baselineRows = baselineCutoffDate ? rows.filter((r) => r.date && r.date <= baselineCutoffDate) : rows
   const byChampion = {}
-  for (const r of rows) {
+  for (const r of baselineRows) {
     if (r.champion) {
       if (!byChampion[r.champion]) byChampion[r.champion] = []
       byChampion[r.champion].push(r)
@@ -114,7 +125,7 @@ export function computeBaselines(rows, { minChampionGames = 3 } = {}) {
   }
 
   const byRole = {}
-  for (const r of rows) {
+  for (const r of baselineRows) {
     if (!r.role) continue
     if (r.champion && qualifyingChampions.has(r.champion)) continue // already has its own baseline — don't let it inflate the role fallback
     if (!byRole[r.role]) byRole[r.role] = []
@@ -129,8 +140,8 @@ export function computeBaselines(rows, { minChampionGames = 3 } = {}) {
 // Compute the Performance Index for every row, using each row's own champion
 // baseline when available, else its role baseline. Rows with neither (should
 // only happen if role is also missing) get a null index rather than a guess.
-export function computePerformanceIndex(rows, { minChampionGames = 3 } = {}) {
-  const baselines = computeBaselines(rows, { minChampionGames })
+export function computePerformanceIndex(rows, { minChampionGames = 3, baselineCutoffDate = null } = {}) {
+  const baselines = computeBaselines(rows, { minChampionGames, baselineCutoffDate })
 
   return rows.map((r) => {
     const champBaseline = r.champion ? baselines.champion[r.champion] : null
