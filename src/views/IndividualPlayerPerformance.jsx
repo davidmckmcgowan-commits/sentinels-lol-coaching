@@ -4,7 +4,7 @@ import {
   ResponsiveContainer, ComposedChart, Line, ReferenceLine,
 } from 'recharts'
 import { supabase } from '../lib/supabaseClient.js'
-import { useSupabaseQuery } from '../lib/useSupabaseQuery.js'
+import { useSupabaseQuery, fetchAllRows } from '../lib/useSupabaseQuery.js'
 import {
   ROSTER_PLAYERS, SLEEP_DEBT_BANDS, sleepDebtColor, formatDate, bucketize,
   opponentTier, average,
@@ -369,11 +369,17 @@ export default function IndividualPlayerPerformance() {
   // Fetch ALL grid_player_games rows (both teams, no is_sentinels filter) so we
   // can look up the opposing same-role player's net worth for the Performance
   // Index's economy component.
+  // Paginated via fetchAllRows: this table passed 11,000+ rows once daily GRID
+  // sync came online, well past PostgREST's silent 1000-row default cap — a
+  // plain .select() here was truncating the data and made Official games look
+  // like they didn't exist for most players (bug found 2026-07-13).
   const { data: allGridRows, error: gridError, loading: gridLoading } = useSupabaseQuery(
-    () => supabase
-      .from('grid_player_games')
-      .select('game_id, player, role, champion, kills, deaths, assists, net_worth, is_sentinels, team_name, grid_games(game_number, sentinels_won, sentinels_kills, opponent_kills, grid_series_id, grid_series(series_date, series_type, opponent_name, sentinels_won, start_time_scheduled))')
-      .not('player', 'is', null),
+    () => fetchAllRows(() =>
+      supabase
+        .from('grid_player_games')
+        .select('game_id, player, role, champion, kills, deaths, assists, net_worth, is_sentinels, team_name, grid_games(game_number, sentinels_won, sentinels_kills, opponent_kills, grid_series_id, grid_series(series_date, series_type, opponent_name, sentinels_won, start_time_scheduled))')
+        .not('player', 'is', null)
+    ),
     []
   )
 
