@@ -3,10 +3,92 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, LabelList,
 } from 'recharts'
 import { supabase } from '../lib/supabaseClient.js'
-import { useSupabaseQuery } from '../lib/useSupabaseQuery.js'
+import { useSupabaseQuery, fetchAllRows } from '../lib/useSupabaseQuery.js'
 import {
   SESSION_TYPES, READINESS_SESSION_TYPES, OPPONENT_TIERS, SLEEP_BUCKETS, bucketize, formatDate,
 } from '../lib/constants.js'
+import InfoTip from '../components/InfoTip.jsx'
+
+// Self-service "has date X synced yet" check (added 2026-07-14) — David kept
+// having to ask in chat / wait on a SQL query just to confirm whether a
+// recent date's GRID data had come in. This reads grid_series directly
+// (paginated via fetchAllRows since this table also grows past 1000 rows
+// over time, same class of bug as grid_player_games hit on 2026-07-13) and
+// shows the last 21 calendar days with any series logged, so the answer is
+// "look at the app," not "ask Claude to run a query."
+function DataSyncStatusPanel() {
+  const { data, loading, error } = useSupabaseQuery(
+    () => fetchAllRows(() => supabase.from('grid_series').select('series_date, series_type, opponent_name')),
+    []
+  )
+
+  const byDate = useMemo(() => {
+    if (!data) return []
+    const map = new Map()
+    for (const s of data) {
+      if (!s.series_date) continue
+      if (!map.has(s.series_date)) {
+        map.set(s.series_date, { date: s.series_date, count: 0, opponents: new Set(), types: new Set() })
+      }
+      const entry = map.get(s.series_date)
+      entry.count += 1
+      if (s.opponent_name) entry.opponents.add(s.opponent_name)
+      if (s.series_type) entry.types.add(s.series_type)
+    }
+    return [...map.values()]
+      .sort((a, b) => (a.date < b.date ? 1 : -1))
+      .slice(0, 21)
+      .map((e) => ({ ...e, opponents: [...e.opponents].join(', '), types: [...e.types].join(' / ') }))
+  }, [data])
+
+  const latestDate = byDate[0]?.date ?? null
+  const totalSeries = data?.length ?? 0
+  const daysSinceLatest = latestDate ? Math.round((Date.now() - new Date(latestDate).getTime()) / 86400000) : null
+
+  return (
+    <div className="panel">
+      <h2>
+        Data Sync Status
+        <InfoTip text="Reads grid_series directly — the same table the whole app is built on. If a date you expect isn't in this list, the sync hasn't pulled it yet." />
+      </h2>
+      <p className="panel-caption">
+        Quick check for &ldquo;has date X synced yet&rdquo; without asking in chat. Shows the last 21 calendar
+        days with any GRID series logged (Scrim or Official). If today or yesterday is missing, run
+        <code> grid-sync/run_daily_sync.ps1</code> to catch up.
+      </p>
+      {loading && <div className="empty-state">Loading…</div>}
+      {error && <div className="flag-banner critical">Error loading sync status: {error.message ?? String(error)}</div>}
+      {!loading && !error && (
+        <>
+          <p className={`flag-banner ${daysSinceLatest != null && daysSinceLatest > 1 ? 'amber' : 'ok'}`}>
+            Latest data: {formatDate(latestDate)} ({totalSeries} series total in the database)
+            {daysSinceLatest != null && daysSinceLatest > 1 ? ` — that's ${daysSinceLatest} days ago, the sync may be behind.` : ''}
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th># Series</th>
+                <th>Type(s)</th>
+                <th>Opponent(s)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {byDate.map((d) => (
+                <tr key={d.date}>
+                  <td>{formatDate(d.date)}</td>
+                  <td>{d.count}</td>
+                  <td>{d.types}</td>
+                  <td>{d.opponents}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+    </div>
+  )
+}
 
 function TierChip({ tier }) {
   if (tier === null || tier === undefined) return <span>—</span>
@@ -73,6 +155,8 @@ export default function TeamSessionDashboard() {
 
   return (
     <div>
+      <DataSyncStatusPanel />
+
       <div className="panel">
         <h2>Session Filters</h2>
         <p className="panel-caption">
