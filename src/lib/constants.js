@@ -99,10 +99,20 @@ export function bucketize(value, buckets) {
   return null
 }
 
+// BUG FIX (2026-07-13): `new Date('2026-07-06')` parses the string as UTC
+// midnight, then toLocaleDateString() renders it in the viewer's LOCAL
+// timezone — for anyone west of UTC that silently rolls the displayed date
+// back by one (e.g. showed "Jul 5" for a game logged on "Jul 6"). Every date
+// in this app is a plain calendar date (a game happened ON a day), not a
+// timestamp, so it should never shift with the viewer's timezone. Fixed by
+// parsing the Y/M/D parts directly into a local Date instead of going through
+// the UTC-then-convert path.
 export function formatDate(dateStr) {
   if (!dateStr) return '—'
   try {
-    const d = new Date(dateStr)
+    const parts = String(dateStr).slice(0, 10).split('-').map(Number)
+    if (parts.length !== 3 || parts.some((p) => Number.isNaN(p))) return dateStr
+    const d = new Date(parts[0], parts[1] - 1, parts[2])
     if (Number.isNaN(d.getTime())) return dateStr
     return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
   } catch {

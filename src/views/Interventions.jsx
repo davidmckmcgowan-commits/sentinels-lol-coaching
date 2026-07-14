@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { supabase } from '../lib/supabaseClient.js'
+import InfoTip from '../components/InfoTip.jsx'
 import { useSupabaseQuery, fetchAllRows } from '../lib/useSupabaseQuery.js'
 import { ROSTER_PLAYERS, SEASON_CUTOFF_DATE, SEASON_CUTOFF_LABEL, formatDate, opponentTier } from '../lib/constants.js'
 import { groupByPlayer } from '../lib/sleepDebt.js'
@@ -31,10 +32,10 @@ const STATUS_CLASS = {
   unknown: '',
 }
 
-function CurrentStatusCard({ label, level, detail }) {
+function CurrentStatusCard({ label, level, detail, tooltip }) {
   return (
     <div className={`stat-card ${STATUS_CLASS[level] ?? ''}`}>
-      <div className="stat-label">{label}</div>
+      <div className="stat-label">{label}{tooltip && <InfoTip text={tooltip} />}</div>
       <div className="stat-value" style={{ fontSize: 18 }}>{STATUS_LABEL[level] ?? 'Unknown'}</div>
       <div className="stat-sub">{detail}</div>
     </div>
@@ -171,7 +172,10 @@ export default function Interventions() {
     <div>
       {!loading && !error && (
         <div className="panel">
-          <h2>Current Season Tracking — {SEASON_CUTOFF_LABEL}</h2>
+          <h2>
+            Current Season Tracking — {SEASON_CUTOFF_LABEL}
+            <InfoTip text="Compares each player's performance since Split 2 practice resumed against a baseline frozen from before that date, so the comparison isn't circular — the baseline can't shift just because new games come in." />
+          </h2>
           <p className="panel-caption">
             Champion/role baselines below are frozen to games through {formatDate(SEASON_CUTOFF_DATE)} (everything
             before Split 2 practice resumed) — every game from {formatDate(SEASON_CUTOFF_DATE)} onward is scored
@@ -184,9 +188,18 @@ export default function Interventions() {
             <thead>
               <tr>
                 <th>Player</th>
-                <th>Baseline (through {formatDate(SEASON_CUTOFF_DATE)})</th>
-                <th>Current Season (since Jul 7)</th>
-                <th>Change</th>
+                <th>
+                  Baseline (through {formatDate(SEASON_CUTOFF_DATE)})
+                  <InfoTip text="The frozen historical reference — every scored game through this date, before Split 2 practice resumed. This number doesn't change as new games come in." />
+                </th>
+                <th>
+                  Current Season (since Jul 7)
+                  <InfoTip text="Games from Jul 7, 2026 onward, scored against the frozen baseline. Samples are still small this early — read as a trend forming, not a settled result." />
+                </th>
+                <th>
+                  Change
+                  <InfoTip text="Current Season % good minus Baseline % good. Positive means this player is outperforming their own pre-Split-2 baseline so far." align="right" />
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -205,7 +218,10 @@ export default function Interventions() {
 
       {!loading && !error && (
         <div className="panel">
-          <h2>Team-Wide: Practice Activation</h2>
+          <h2>
+            Team-Wide: Practice Activation
+            <InfoTip text="A process-level finding, not a per-player comparison — this showed up the same way for every player on the roster." />
+          </h2>
           <p className="panel-caption">
             A process-level finding (2026-07-13), not a per-player read — this showed up the same way for
             everyone. Every player scores dramatically better in Officials than Scrims on their own history, and
@@ -222,9 +238,18 @@ export default function Interventions() {
             <thead>
               <tr>
                 <th>Player</th>
-                <th>Official — % good (95% CI, n)</th>
-                <th>Scrim — % good (95% CI, n)</th>
-                <th>Gap</th>
+                <th>
+                  Official — % good (95% CI, n)
+                  <InfoTip text="% of Official (real match) games where this player's Performance Index was above their own average, with a 95% confidence range and sample size." />
+                </th>
+                <th>
+                  Scrim — % good (95% CI, n)
+                  <InfoTip text="Same measure, but for practice/scrim games only." />
+                </th>
+                <th>
+                  Gap
+                  <InfoTip text="Official % good minus Scrim % good. A large positive gap means real stakes bring out much better play than routine practice does." align="right" />
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -246,7 +271,10 @@ export default function Interventions() {
             <thead>
               <tr>
                 <th>Session Type</th>
-                <th>% good (95% CI, n)</th>
+                <th>
+                  % good (95% CI, n)
+                  <InfoTip text="Same own-baseline 'good performance' measure as everywhere else in this app, just pooled across all 5 players for this practice-intensity label instead of split by player." align="right" />
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -300,6 +328,7 @@ export default function Interventions() {
               <CurrentStatusCard
                 label="Sleep (3-night rolling)"
                 level={currentStatus.sleep.level}
+                tooltip="Average of the last 3 logged nights. Below 6.5h is a flag, below 6.0h is a red flag, and any single night under 5h is a hard gate — no tDCS or stimulation that day (S-R8)."
                 detail={
                   currentStatus.sleep.rollingAvg != null
                     ? `${currentStatus.sleep.rollingAvg}h as of ${formatDate(currentStatus.sleep.asOfDate)}${currentStatus.sleep.latestNightHours != null && currentStatus.sleep.latestNightHours < 5 ? ' — a logged night under 5h is a hard gate, no tDCS today' : ''}`
@@ -309,11 +338,13 @@ export default function Interventions() {
               <CurrentStatusCard
                 label="Vibe (avg of last 3 entries)"
                 level={currentStatus.vibe.level}
+                tooltip="Average self-reported vibe (1-10) from the last 3 daily check-ins. 7+ is high/stable, 5 or below is a flag, 3 or below is critical."
                 detail={currentStatus.vibe.avg != null ? `${currentStatus.vibe.avg} avg over ${currentStatus.vibe.n} entr${currentStatus.vibe.n === 1 ? 'y' : 'ies'}, most recent ${formatDate(currentStatus.vibe.lastDate)}` : 'No vibe check logged yet.'}
               />
               <CurrentStatusCard
                 label="Champion Pool (last 8 games)"
                 level={currentStatus.championPool.level}
+                tooltip="How many of this player's last 8 scored games were on a champion without 3+ games of history yet (off-meta/thin-sample) — the single biggest performance risk found in this data (off-meta picks collapse to a fraction of the good-performance rate of established picks)."
                 detail={
                   currentStatus.championPool.n > 0
                     ? `${currentStatus.championPool.offMetaCount} of ${currentStatus.championPool.n} recent games on an off-meta/thin-sample pick${currentStatus.championPool.recentOffMetaChampions.length > 0 ? ` (${currentStatus.championPool.recentOffMetaChampions.join(', ')})` : ''}`
@@ -324,7 +355,10 @@ export default function Interventions() {
           </div>
 
           <div className="panel">
-            <h2>Standing Pre-Official Protocol — {player}</h2>
+            <h2>
+              Standing Pre-Official Protocol — {player}
+              <InfoTip text="Every axis from the Evidence-Based Patterns analysis, re-scoped to this player's Official-day games only. Confirmed risks/benefits (sorted first) mean this player's own data shows a real pattern, not just noise — see each card for the numbers." />
+            </h2>
             <p className="panel-caption">
               {confirmedRiskCount > 0
                 ? `${confirmedRiskCount} confirmed risk${confirmedRiskCount === 1 ? '' : 's'} for ${player} specifically, shown first.`

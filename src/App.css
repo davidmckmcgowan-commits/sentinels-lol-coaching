@@ -518,6 +518,88 @@ tbody tr:hover {
   margin-top: 6px;
 }
 
+/* Hover/focus explanation icon — see components/InfoTip.jsx. Pure CSS, no
+   tooltip library: the bubble is rendered via ::after using the
+   data-tooltip attribute, only shown on :hover/:focus. */
+.info-tip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid var(--text-faint);
+  color: var(--text-faint);
+  font-size: 10px;
+  font-style: italic;
+  line-height: 1;
+  margin-left: 6px;
+  cursor: help;
+  user-select: none;
+  vertical-align: middle;
+}
+
+.info-tip:hover,
+.info-tip:focus {
+  border-color: var(--accent);
+  color: var(--accent);
+  outline: none;
+}
+
+.info-tip:hover::after,
+.info-tip:focus::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: 130%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg-panel-alt);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 9px 11px;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 400;
+  white-space: normal;
+  width: 250px;
+  z-index: 60;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.45);
+  line-height: 1.45;
+  text-align: left;
+}
+
+.info-tip:hover::before,
+.info-tip:focus::before {
+  content: '';
+  position: absolute;
+  bottom: 120%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: var(--border);
+  z-index: 61;
+}
+
+.info-tip.align-right::after {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+
+.info-tip.align-right::before {
+  left: auto;
+  right: 10px;
+  transform: none;
+}
+
+th .info-tip {
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 400;
+}
+
 .reflection-feed {
   display: flex;
   flex-direction: column;
