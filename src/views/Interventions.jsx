@@ -17,6 +17,24 @@ function todayDateString() {
   return new Date().toISOString().slice(0, 10)
 }
 
+// Plain-language key for the "% good (95% CI, n=X)" notation used in every
+// table below — added 2026-07-13 after feedback that coaches need to read
+// this at a glance, not decode it. Rendered as visible text under each
+// table, not hidden behind a hover, since this is the core thing everything
+// else depends on understanding.
+function NumberFormatLegend() {
+  return (
+    <p className="panel-caption" style={{ fontSize: 11.5, marginTop: 6 }}>
+      How to read this: <strong>% good</strong> is the share of that player&rsquo;s own games where their
+      Performance Index beat their own average (never compared to another player). The range in parentheses is the
+      95% confidence interval — the honest range the true rate could fall in, given how much data this is based on.
+      <strong> n</strong> is that sample size — the number of games behind the number. A small n (single digits)
+      means a wide, less certain range; treat those as early reads. A bigger n means the range is tighter and more
+      trustworthy.
+    </p>
+  )
+}
+
 const STATUS_LABEL = {
   ok: 'On track',
   watch: 'Watch',
@@ -213,6 +231,7 @@ export default function Interventions() {
               ))}
             </tbody>
           </table>
+          <NumberFormatLegend />
         </div>
       )}
 
@@ -263,6 +282,7 @@ export default function Interventions() {
               ))}
             </tbody>
           </table>
+          <NumberFormatLegend />
           <p className="panel-caption" style={{ marginTop: 14 }}>
             Does the Green/Orange/Red practice-intensity label actually predict anything? Pooled across the whole
             roster (a process check, not a player comparison):
@@ -286,6 +306,9 @@ export default function Interventions() {
               ))}
             </tbody>
           </table>
+          <p className="panel-caption" style={{ fontSize: 11.5, marginTop: 6 }}>
+            Same reading as the table above: % good (95% confidence range, n = number of games it&rsquo;s based on).
+          </p>
           <p className="panel-caption" style={{ marginTop: 10 }}>
             If these three rows come back statistically flat, that&rsquo;s the finding: the label isn&rsquo;t
             currently producing a measurable difference in output, which is worth an audit of what actually
