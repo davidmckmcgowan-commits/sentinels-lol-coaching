@@ -130,11 +130,27 @@ export default function TeamSessionDashboard() {
     })
   }, [data, tierFilter, typeFilter, dateFrom, dateTo, readinessMode])
 
+  // FIX (2026-07-16): this used to bucket on team_avg_sleep_hours, a single
+  // averaged number — which hides exactly the case that matters most: one
+  // player badly under-slept while the rest of the roster slept fine. A 4-at-8h
+  // + 1-at-4h night can still average out to a "fine" 7.2h bucket. Per David's
+  // request, bucket by the WEAKEST LINK instead — the lowest of the 5
+  // individually-logged player sleep hours for that session — so a single
+  // under-slept player pulls the whole session into the low bucket rather than
+  // being averaged away. Falls back to team_avg_sleep_hours only for older
+  // rows that never had the 5 individual columns filled in.
+  function weakestLinkSleepHours(s) {
+    const vals = [s.impact_sleep_hours, s.hambak_sleep_hours, s.darkwings_sleep_hours, s.huhi_sleep_hours, s.rahel_sleep_hours]
+      .filter((v) => typeof v === 'number' && !Number.isNaN(v))
+    if (vals.length > 0) return Math.min(...vals)
+    return typeof s.team_avg_sleep_hours === 'number' ? s.team_avg_sleep_hours : null
+  }
+
   const sleepBucketChart = useMemo(() => {
     const buckets = {}
     for (const b of SLEEP_BUCKETS) buckets[b.label] = { label: b.label, wins: 0, total: 0 }
     for (const s of filtered) {
-      const label = bucketize(s.team_avg_sleep_hours, SLEEP_BUCKETS)
+      const label = bucketize(weakestLinkSleepHours(s), SLEEP_BUCKETS)
       if (!label) continue
       buckets[label].total += 1
       if (s.result === 'Win' || s.win_value > 0) buckets[label].wins += 1
@@ -218,10 +234,14 @@ export default function TeamSessionDashboard() {
       </div>
 
       <div className="panel">
-        <h2>Win Rate by Sleep Tier</h2>
+        <h2>
+          Win Rate by Sleep Tier (Weakest Link)
+          <InfoTip text="Bucketed by the LOWEST of the 5 players' individually-logged sleep hours for that session, not the team average — so one badly under-slept player isn't hidden by everyone else sleeping fine. Falls back to the team average only for older rows logged before individual sleep was tracked per player." />
+        </h2>
         <p className="panel-caption">
-          Team average sleep hours bucketed against win rate, using the current filters
-          ({filtered.length} session{filtered.length === 1 ? '' : 's'} in view).
+          Each session is bucketed by whichever player slept the least that night, not the team average — so a
+          single under-slept player pulls the whole session into the low bucket instead of being averaged away.
+          Using the current filters ({filtered.length} session{filtered.length === 1 ? '' : 's'} in view).
         </p>
         <div className="chart-wrap">
           <ResponsiveContainer width="100%" height="100%">
