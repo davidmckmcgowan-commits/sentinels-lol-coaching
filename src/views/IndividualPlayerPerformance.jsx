@@ -1,13 +1,13 @@
 import { useMemo, useState } from 'react'
 import {
   BarChart, Bar, Cell, LabelList, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, ComposedChart, Line, ReferenceLine,
+  ResponsiveContainer, ComposedChart, Line, ReferenceLine, Legend,
 } from 'recharts'
 import { supabase } from '../lib/supabaseClient.js'
 import { useSupabaseQuery, fetchAllRows } from '../lib/useSupabaseQuery.js'
 import {
   ROSTER_PLAYERS, SLEEP_DEBT_BANDS, sleepDebtColor, formatDate, bucketize,
-  opponentTier, average, SEASON_CUTOFF_DATE,
+  opponentTier, average, SEASON_CUTOFF_DATE, canonicalOpponentName,
 } from '../lib/constants.js'
 import { groupByPlayer } from '../lib/sleepDebt.js'
 import {
@@ -195,6 +195,82 @@ function IndexGroupChart({ rows, keyFn, sortOrder, color = '#5b8def', yLabel = '
   )
 }
 
+// ---- SCRIM vs Official, optionally filtered to a single opponent ----------
+
+const SCRIM_OFFICIAL_ORDER = ['SCRIM', 'Official']
+
+// Average Performance Index split into SCRIM vs Official for a set of rows.
+// Returns { SCRIM: {avg, n}, Official: {avg, n} } with avg=null when n=0.
+function scrimOfficialSummary(rows) {
+  const acc = {}
+  for (const label of SCRIM_OFFICIAL_ORDER) acc[label] = { sum: 0, n: 0 }
+  for (const r of rows) {
+    if (r.performanceIndex == null) continue
+    const label = seriesTypeDisplay(r.seriesType)
+    if (!acc[label]) continue
+    acc[label].sum += r.performanceIndex
+    acc[label].n += 1
+  }
+  const out = {}
+  for (const label of SCRIM_OFFICIAL_ORDER) {
+    const e = acc[label]
+    out[label] = { avg: e.n > 0 ? Math.round((e.sum / e.n) * 10) / 10 : null, n: e.n }
+  }
+  return out
+}
+
+function ScrimVsOfficialChart({ rows, opponent }) {
+  const data = useMemo(() => {
+    const overall = scrimOfficialSummary(rows)
+    if (opponent === 'all') {
+      return SCRIM_OFFICIAL_ORDER.map((label) => ({
+        type: label, opp: overall[label].avg, oppN: overall[label].n, all: null, allN: overall[label].n,
+      }))
+    }
+    const opp = scrimOfficialSummary(rows.filter((r) => canonicalOpponentName(r.opponentName) === opponent))
+    return SCRIM_OFFICIAL_ORDER.map((label) => ({
+      type: label, opp: opp[label].avg, oppN: opp[label].n, all: overall[label].avg, allN: overall[label].n,
+    }))
+  }, [rows, opponent])
+
+  const showOverall = opponent !== 'all'
+  const anyData = data.some((d) => d.oppN > 0 || (showOverall && d.allN > 0))
+  if (!anyData) {
+    return <div className="empty-state">No scored games{showOverall ? ` vs ${opponent}` : ''} yet.</div>
+  }
+
+  const oppLabel = showOverall ? `vs ${opponent}` : 'All opponents'
+
+  return (
+    <div className="chart-wrap">
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={data} margin={{ top: 10, right: 20, left: 0, bottom: 0 }} barGap={showOverall ? 4 : 0}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#2a2f3a" />
+          <XAxis dataKey="type" stroke="#9aa1ae" fontSize={11} />
+          <YAxis domain={[0, 100]} stroke="#9aa1ae" fontSize={12} label={{ value: 'Avg Index', angle: -90, position: 'insideLeft', fill: '#676f7d', fontSize: 11 }} />
+          <ReferenceLine y={50} stroke="#676f7d" strokeDasharray="4 4" />
+          {showOverall && <Legend wrapperStyle={{ fontSize: 11 }} />}
+          <Tooltip
+            contentStyle={{ background: '#171a21', border: '1px solid #2a2f3a', fontSize: 12 }}
+            formatter={(value, name, props) => {
+              const n = props.dataKey === 'opp' ? props.payload.oppN : props.payload.allN
+              return [`${value == null ? '—' : value} avg Index (n=${n})`, name]
+            }}
+          />
+          <Bar dataKey="opp" name={oppLabel} radius={[4, 4, 0, 0]} fill="#5b8def" isAnimationActive={false}>
+            <LabelList dataKey="opp" position="top" formatter={(v, i) => (v != null ? `${v} (n=${data[i]?.oppN ?? 0})` : `n=${data[i]?.oppN ?? 0}`)} fill="#e6e8ec" fontSize={11} />
+          </Bar>
+          {showOverall && (
+            <Bar dataKey="all" name="All opponents" radius={[4, 4, 0, 0]} fill="#5b8def" fillOpacity={0.28} isAnimationActive={false}>
+              <LabelList dataKey="all" position="top" formatter={(v, i) => (v != null ? `${v} (n=${data[i]?.allN ?? 0})` : '')} fill="#9aa1ae" fontSize={10} />
+            </Bar>
+          )}
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  )
+}
+
 // ---- Interference by context (not mutually-exclusive buckets) -------------
 
 function InterferenceContextChart({ rows, tilt }) {
@@ -365,6 +441,7 @@ function InterferenceTaggingForm({ player, rows, existingTags, tagsLoading, tags
 export default function IndividualPlayerPerformance() {
   const [player, setPlayer] = useState(ROSTER_PLAYERS[0])
   const [sleepMode, setSleepMode] = useState('rolling') // 'rolling' | 'sameNight'
+  const [perfOpponent, setPerfOpponent] = useState('all') // 'all' | canonical opponent name
 
   // Fetch ALL grid_player_games rows (both teams, no is_sentinels filter) so we
   // can look up the opposing same-role player's net worth for the Performance
@@ -499,6 +576,111 @@ export default function IndividualPlayerPerformance() {
     const below = all.filter((v) => v <= selectedMatch.performanceIndex).length
     return Math.round((below / all.length) * 100)
   }, [selectedMatch, scoredRows])
+
+  // Per-opponent SCRIM-vs-Official breakdown for this player (canonicalised so
+  // e.g. "Team Liquid" and "Team Liquid Alienware" are one entry). Counts are
+  // GAMES (individual grid_player_games rows), with distinct SERIES counts kept
+  // alongside because Officials are BO3s — 6 official games can be just 2 series
+  // (2 match days), and the series count is the honest independent-sample size.
+  const opponentBreakdown = useMemo(() => {
+    const map = new Map()
+    for (const r of scoredRows) {
+      const name = canonicalOpponentName(r.opponentName)
+      if (!name) continue
+      if (!map.has(name)) {
+        map.set(name, {
+          name,
+          scrim: { sum: 0, n: 0, series: new Set() },
+          official: { sum: 0, n: 0, series: new Set() },
+        })
+      }
+      const e = map.get(name)
+      const bucket = r.seriesType === 'ESPORTS' ? e.official : r.seriesType === 'SCRIM' ? e.scrim : null
+      if (!bucket) continue
+      bucket.sum += r.performanceIndex // scoredRows are already performanceIndex != null
+      bucket.n += 1
+      if (r.seriesId) bucket.series.add(r.seriesId)
+    }
+    return Array.from(map.values())
+      .map((e) => {
+        const scrimAvg = e.scrim.n ? Math.round((e.scrim.sum / e.scrim.n) * 10) / 10 : null
+        const officialAvg = e.official.n ? Math.round((e.official.sum / e.official.n) * 10) / 10 : null
+        return {
+          name: e.name,
+          scrimGames: e.scrim.n, scrimSeries: e.scrim.series.size, scrimAvg,
+          officialGames: e.official.n, officialSeries: e.official.series.size, officialAvg,
+          gap: scrimAvg != null && officialAvg != null ? Math.round((officialAvg - scrimAvg) * 10) / 10 : null,
+        }
+      })
+      .sort((a, b) => (b.scrimGames + b.officialGames) - (a.scrimGames + a.officialGames) || a.name.localeCompare(b.name))
+  }, [scoredRows])
+
+  // If the selected opponent no longer exists for this player (e.g. after
+  // switching players), fall back to All so the chart never goes blank.
+  const activePerfOpponent = perfOpponent !== 'all' && opponentBreakdown.some((o) => o.name === perfOpponent)
+    ? perfOpponent
+    : 'all'
+
+  const selectedBreakdown = activePerfOpponent === 'all'
+    ? null
+    : opponentBreakdown.find((o) => o.name === activePerfOpponent) ?? null
+
+  // Opponents this player has actually played on stage — the set where a
+  // scrim-vs-official comparison exists at all.
+  const officialOpponents = opponentBreakdown.filter((o) => o.officialGames > 0)
+  const scrimOnlyCount = opponentBreakdown.length - officialOpponents.length
+
+  // ROSTER-WIDE scrim→stage gap matrix (independent of the player tab above).
+  // Recomputes the Performance Index for every player — same frozen-baseline
+  // pipeline as the per-player playerRows above — then, per player per opponent,
+  // the gap = official avg Index − scrim avg Index. This is the only roster-wide
+  // computation in this otherwise per-player view (A-R1 still holds: every gap is
+  // a player measured against their own scrim baseline, never against a teammate).
+  const rosterScrimOfficial = useMemo(() => {
+    if (!allGridRows) return { opponents: [], byPlayer: {} }
+    const byPlayer = {}
+    const oppAgg = new Map()
+    for (const p of ROSTER_PLAYERS) {
+      const base = buildPlayerPerformanceSeries({ rawRows: sentinelsRawRows, player: p, sleepByPlayer, sessionTypeByDate })
+      const withNetWorth = attachNetWorthDiff(base, opponentNetWorthByGameRole)
+      const scored = computePerformanceIndex(withNetWorth, { baselineCutoffDate: SEASON_CUTOFF_DATE })
+        .filter((r) => r.performanceIndex != null)
+      const map = new Map()
+      for (const r of scored) {
+        const name = canonicalOpponentName(r.opponentName)
+        if (!name) continue
+        if (!map.has(name)) map.set(name, { scrim: { sum: 0, n: 0 }, official: { sum: 0, n: 0, series: new Set() } })
+        const e = map.get(name)
+        const bucket = r.seriesType === 'ESPORTS' ? e.official : r.seriesType === 'SCRIM' ? e.scrim : null
+        if (!bucket) continue
+        bucket.sum += r.performanceIndex
+        bucket.n += 1
+        if (bucket === e.official && r.seriesId) e.official.series.add(r.seriesId)
+      }
+      const finalRow = {}
+      for (const [name, e] of map) {
+        const scrimAvg = e.scrim.n ? Math.round((e.scrim.sum / e.scrim.n) * 10) / 10 : null
+        const officialAvg = e.official.n ? Math.round((e.official.sum / e.official.n) * 10) / 10 : null
+        finalRow[name] = {
+          scrimAvg, officialAvg,
+          scrimGames: e.scrim.n, officialGames: e.official.n, officialSeries: e.official.series.size,
+          gap: scrimAvg != null && officialAvg != null ? Math.round((officialAvg - scrimAvg) * 10) / 10 : null,
+        }
+        if (e.official.n > 0) {
+          const cur = oppAgg.get(name) || { officialGames: 0, officialSeries: 0 }
+          oppAgg.set(name, {
+            officialGames: Math.max(cur.officialGames, e.official.n),
+            officialSeries: Math.max(cur.officialSeries, e.official.series.size),
+          })
+        }
+      }
+      byPlayer[p] = finalRow
+    }
+    const opponents = Array.from(oppAgg.entries())
+      .map(([name, m]) => ({ name, ...m }))
+      .sort((a, b) => b.officialGames - a.officialGames || a.name.localeCompare(b.name))
+    return { opponents, byPlayer }
+  }, [allGridRows, sentinelsRawRows, sleepByPlayer, sessionTypeByDate, opponentNetWorthByGameRole])
 
   return (
     <div>
@@ -761,8 +943,156 @@ export default function IndividualPlayerPerformance() {
             <p className="panel-caption">
               GRID&rsquo;s native, always-available split (GRID calls it ESPORTS internally; shown here as
               Official, which is what it is) — the primary read on whether performance holds up on stage.
+              Pick an opponent to see this split against just them (e.g. {player} vs Team Liquid in scrims vs
+              on stage), with {player}&rsquo;s all-opponents average shown faded behind for reference.
             </p>
-            <IndexGroupChart rows={scoredRows} keyFn={(r) => seriesTypeDisplay(r.seriesType)} sortOrder={['SCRIM', 'Official']} color="#5b8def" />
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--text-dim)', marginBottom: 14, maxWidth: 420 }}>
+              Opponent
+              <select value={activePerfOpponent} onChange={(e) => setPerfOpponent(e.target.value)}>
+                <option value="all">All opponents</option>
+                {opponentBreakdown.map((o) => (
+                  <option key={o.name} value={o.name}>
+                    {o.name} — {o.scrimGames} scrim game{o.scrimGames === 1 ? '' : 's'}, {o.officialGames} official game{o.officialGames === 1 ? '' : 's'}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <ScrimVsOfficialChart rows={scoredRows} opponent={activePerfOpponent} />
+            {selectedBreakdown && (
+              <p className="panel-caption" style={{ marginTop: 10 }}>
+                vs {selectedBreakdown.name}: {selectedBreakdown.scrimGames} scrim game{selectedBreakdown.scrimGames === 1 ? '' : 's'}
+                {selectedBreakdown.scrimAvg != null ? ` (avg Index ${selectedBreakdown.scrimAvg})` : ''}
+                {' · '}
+                {selectedBreakdown.officialGames} official game{selectedBreakdown.officialGames === 1 ? '' : 's'}
+                {selectedBreakdown.officialGames > 0
+                  ? ` across ${selectedBreakdown.officialSeries} series${selectedBreakdown.officialAvg != null ? ` (avg Index ${selectedBreakdown.officialAvg})` : ''}`
+                  : ''}
+                {selectedBreakdown.gap != null ? ` — gap ${selectedBreakdown.gap > 0 ? '+' : ''}${selectedBreakdown.gap} on stage` : ''}.
+                {selectedBreakdown.officialGames === 0
+                  ? ' No official games vs this opponent yet — only the scrim bar is populated.'
+                  : selectedBreakdown.officialSeries < 3
+                    ? ` Only ${selectedBreakdown.officialSeries} official series (match day${selectedBreakdown.officialSeries === 1 ? '' : 's'}) — read the on-stage bar as directional.`
+                    : ''}
+              </p>
+            )}
+
+            {activePerfOpponent === 'all' && (
+              <>
+                <h3 style={{ fontSize: 14, marginTop: 22, marginBottom: 4 }}>Scrim vs Official by Opponent — {player}</h3>
+                <p className="panel-caption">
+                  Every opponent {player} has actually played on stage, scrim Index vs official Index side by
+                  side. Gap = official − scrim: positive (green) means {player} holds up or rises on stage
+                  against them, negative (amber) means a drop from the practice room. Officials are few — the
+                  series count is the honest sample size, so read gaps as directional. Click a row to open its
+                  chart above.
+                </p>
+                {officialOpponents.length === 0 ? (
+                  <div className="empty-state">No official games for {player} yet — nothing to compare against scrims.</div>
+                ) : (
+                  <div className="table-scroll">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Opponent</th>
+                          <th>Scrim Index</th>
+                          <th>Official Index</th>
+                          <th>Gap (Official − Scrim)</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {officialOpponents.map((o) => (
+                          <tr
+                            key={o.name}
+                            onClick={() => setPerfOpponent(o.name)}
+                            style={{ cursor: 'pointer' }}
+                            title={`Open ${o.name} chart`}
+                          >
+                            <td>{o.name}</td>
+                            <td>{o.scrimAvg ?? '—'} <span style={{ color: 'var(--text-faint)', fontSize: 11 }}>({o.scrimGames}g)</span></td>
+                            <td>{o.officialAvg ?? '—'} <span style={{ color: 'var(--text-faint)', fontSize: 11 }}>({o.officialGames}g / {o.officialSeries}s)</span></td>
+                            <td style={{ color: o.gap == null ? 'var(--text-dim)' : o.gap >= 0 ? '#3aa76d' : '#e0a940', fontWeight: 600 }}>
+                              {o.gap == null ? '—' : `${o.gap > 0 ? '+' : ''}${o.gap}`}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                {scrimOnlyCount > 0 && (
+                  <p className="panel-caption" style={{ marginTop: 8 }}>
+                    {scrimOnlyCount} other opponent{scrimOnlyCount === 1 ? '' : 's'} {scrimOnlyCount === 1 ? 'is' : 'are'} scrim-only
+                    (no official games) and {scrimOnlyCount === 1 ? 'is' : 'are'} not shown here — pick {scrimOnlyCount === 1 ? 'it' : 'them'} from the dropdown to see the scrim bar alone.
+                  </p>
+                )}
+              </>
+            )}
+          </div>
+
+          <div className="panel">
+            <h2>Roster — Scrim → Stage Gap by Opponent</h2>
+            <p className="panel-caption">
+              The whole roster in one grid — this is the only panel here that ignores the player tab above.
+              Each cell is that player&rsquo;s <strong>scrim → stage gap</strong> against that opponent:
+              their average Performance Index in <em>official</em> games minus their average in <em>scrim</em>
+              games vs the same team. A positive number (green) means the player performs at or above their
+              practice-room level when it&rsquo;s on stage against that opponent; a negative number (amber)
+              means they drop off under stage conditions. Values within a couple of points are left muted —
+              with samples this small that&rsquo;s noise, not a real gap. A blank cell means the player
+              doesn&rsquo;t have scored games in <em>both</em> settings vs that opponent, so no gap can be
+              formed. Every gap is a player measured against their own scrim baseline, never against a
+              teammate (A-R1). The count beside each opponent is its official sample size
+              (series / games) — the honest read on how much to trust that column; two BO3s is two match
+              days, not six independent looks. Hover any cell for the underlying scrim and official averages.
+            </p>
+            {rosterScrimOfficial.opponents.length === 0 ? (
+              <div className="empty-state">No official games scored across the roster yet.</div>
+            ) : (
+              <div className="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Opponent</th>
+                      {ROSTER_PLAYERS.map((p) => (<th key={p} style={{ textAlign: 'center' }}>{p}</th>))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rosterScrimOfficial.opponents.map((opp) => (
+                      <tr key={opp.name}>
+                        <td style={{ whiteSpace: 'nowrap' }}>
+                          {opp.name}{' '}
+                          <span style={{ color: 'var(--text-faint)', fontSize: 11 }}>
+                            ({opp.officialSeries}s / {opp.officialGames}g)
+                          </span>
+                        </td>
+                        {ROSTER_PLAYERS.map((p) => {
+                          const c = rosterScrimOfficial.byPlayer[p]?.[opp.name]
+                          const g = c?.gap
+                          const color = g == null
+                            ? 'var(--text-faint)'
+                            : g >= 3 ? '#3aa76d' : g <= -3 ? '#e0a940' : 'var(--text-dim)'
+                          const title = c && c.scrimAvg != null && c.officialAvg != null
+                            ? `${p} vs ${opp.name}: scrim ${c.scrimAvg} (${c.scrimGames}g) → official ${c.officialAvg} (${c.officialGames}g)`
+                            : c
+                              ? `${p} vs ${opp.name}: ${c.scrimGames}g scrim, ${c.officialGames}g official — need both to form a gap`
+                              : `${p} has no scored games vs ${opp.name}`
+                          return (
+                            <td key={p} style={{ textAlign: 'center', color, fontWeight: g == null ? 400 : 600 }} title={title}>
+                              {g == null ? '—' : `${g > 0 ? '+' : ''}${g}`}
+                            </td>
+                          )
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <p className="panel-caption" style={{ marginTop: 8 }}>
+              Green = clearly better on stage (+3 or more) · amber = clearly worse (−3 or more) · muted =
+              within a few points (treat as level, given the sample). Read whole columns cautiously where the
+              opponent&rsquo;s series count is low.
+            </p>
           </div>
 
           <div className="panel">

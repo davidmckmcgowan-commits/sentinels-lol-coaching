@@ -172,6 +172,36 @@ export function opponentTier(opponentName) {
   return OPPONENT_TIER_BY_NAME[opponentName.trim().toLowerCase()] ?? null
 }
 
+// GRID sends the same team under more than one raw string — most importantly
+// "Team Liquid" and "Team Liquid Alienware" (the official broadcast name) are
+// one team, and "LYON" arrives upper-cased. Collapse the tracked LCS opponents
+// to one canonical display name so a per-opponent filter doesn't split a team's
+// games (and its handful of Official games) across two dropdown entries.
+// Unrecognised opponents (Americas Cup / regional teams) keep their raw name.
+export const OPPONENT_CANONICAL_BY_NAME = {
+  'team liquid': 'Team Liquid',
+  'team liquid alienware': 'Team Liquid',
+  tl: 'Team Liquid',
+  lyon: 'Lyon',
+  'cloud9 kia': 'Cloud9',
+  cloud9: 'Cloud9',
+  c9: 'Cloud9',
+  flyquest: 'FlyQuest',
+  fly: 'FlyQuest',
+  'shopify rebellion': 'Shopify Rebellion',
+  sr: 'Shopify Rebellion',
+  dignitas: 'Dignitas',
+  dig: 'Dignitas',
+  disguised: 'Disguised',
+  dsg: 'Disguised',
+}
+
+export function canonicalOpponentName(opponentName) {
+  if (!opponentName) return null
+  const raw = String(opponentName).trim()
+  return OPPONENT_CANONICAL_BY_NAME[raw.toLowerCase()] ?? raw
+}
+
 // Hard-gate / isolated-disruption thresholds, per the research addendum.
 export const HARD_GATE_HOURS = 5.0
 export const ISOLATED_DISRUPTION_HOURS = 6.5
