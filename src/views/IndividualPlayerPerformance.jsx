@@ -250,6 +250,44 @@ function OpponentComparisonChart({ data, opponentName }) {
   )
 }
 
+// ---- Development over time: one end-of-day point per day played -----------
+// Blue line = that day's scrim average; gold line = trailing-5-scrim-day smooth
+// (the trend read); amber diamonds = official (stage) days. 50 = frozen own avg.
+
+function DailyDevelopmentChart({ days }) {
+  if (!days || days.length === 0) return <div className="empty-state">No scored games yet for this player.</div>
+  return (
+    <div className="chart-wrap" style={{ height: 340 }}>
+      <ResponsiveContainer width="100%" height="100%">
+        <ComposedChart data={days} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#2a2f3a" />
+          <XAxis dataKey="label" stroke="#9aa1ae" fontSize={10} minTickGap={28} />
+          <YAxis domain={[0, 100]} stroke="#9aa1ae" fontSize={12} label={{ value: 'Avg Index', angle: -90, position: 'insideLeft', fill: '#676f7d', fontSize: 11 }} />
+          <ReferenceLine y={50} stroke="#676f7d" strokeDasharray="4 4" label={{ value: 'own average', position: 'insideTopRight', fill: '#676f7d', fontSize: 10 }} />
+          <Legend wrapperStyle={{ fontSize: 11 }} />
+          <Tooltip
+            contentStyle={{ background: '#171a21', border: '1px solid #2a2f3a', fontSize: 12 }}
+            labelFormatter={(label, payload) => {
+              const p = payload && payload[0] && payload[0].payload
+              return p && p.opponents ? `${label} — vs ${p.opponents}` : label
+            }}
+            formatter={(value, name, props) => {
+              const p = props.payload
+              if (name.startsWith('Daily scrim')) return [`${value} (n=${p.scrimN} game${p.scrimN === 1 ? '' : 's'})`, 'Scrim day avg']
+              if (name.startsWith('Trend')) return [`${value}`, 'Trend (5 scrim days)']
+              if (name.startsWith('Official')) return [`${value} (n=${p.officialN} game${p.officialN === 1 ? '' : 's'})`, 'Official day']
+              return [value, name]
+            }}
+          />
+          <Line type="monotone" dataKey="scrimAvg" name="Daily scrim avg" stroke="#5b8def" strokeWidth={1.5} connectNulls dot={{ r: 2.5, fill: '#5b8def', stroke: '#5b8def' }} isAnimationActive={false} />
+          <Line type="monotone" dataKey="trend" name="Trend (last 5 scrim days)" stroke="#d4a017" strokeWidth={2.5} dot={false} connectNulls isAnimationActive={false} />
+          <Line dataKey="officialAvg" name="Official day" stroke="transparent" legendType="diamond" connectNulls={false} dot={{ r: 5, fill: '#e0a940', stroke: '#171a21', strokeWidth: 1 }} isAnimationActive={false} />
+        </ComposedChart>
+      </ResponsiveContainer>
+    </div>
+  )
+}
+
 // ---- Interference by context (not mutually-exclusive buckets) -------------
 
 function InterferenceContextChart({ rows, tilt }) {
@@ -637,6 +675,58 @@ export default function IndividualPlayerPerformance() {
       ]
     : []
 
+  // DEVELOPMENT OVER TIME — one end-of-day snapshot per day the player played.
+  // Each day = the average Performance Index across that day's games (scrim and
+  // official kept separate), so daily training reads as a trajectory instead of
+  // game-by-game noise. A trailing 5-scrim-day average is the smoothed trend
+  // line; a plain-English direction compares the last 5 training days to the 5
+  // before. Baseline stays frozen (SEASON_CUTOFF_DATE), so a rising line is real
+  // improvement, not a moving goalpost.
+  const dailyDevelopment = useMemo(() => {
+    const byDate = new Map()
+    for (const r of scoredRows) {
+      if (!r.date) continue
+      if (!byDate.has(r.date)) byDate.set(r.date, { date: r.date, scrimSum: 0, scrimN: 0, offSum: 0, offN: 0, opponents: new Set() })
+      const e = byDate.get(r.date)
+      if (r.seriesType === 'ESPORTS') { e.offSum += r.performanceIndex; e.offN += 1 }
+      else if (r.seriesType === 'SCRIM') { e.scrimSum += r.performanceIndex; e.scrimN += 1 }
+      const name = canonicalOpponentName(r.opponentName)
+      if (name) e.opponents.add(name)
+    }
+    const days = Array.from(byDate.values())
+      .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+      .map((e) => ({
+        date: e.date,
+        label: formatDate(e.date),
+        scrimAvg: e.scrimN ? Math.round((e.scrimSum / e.scrimN) * 10) / 10 : null,
+        scrimN: e.scrimN,
+        officialAvg: e.offN ? Math.round((e.offSum / e.offN) * 10) / 10 : null,
+        officialN: e.offN,
+        opponents: Array.from(e.opponents).join(', '),
+      }))
+    // trailing 5-scrim-day rolling average as the trend line
+    const K = 5
+    const window = []
+    for (const d of days) {
+      if (d.scrimAvg != null) {
+        window.push(d.scrimAvg)
+        if (window.length > K) window.shift()
+        d.trend = Math.round((window.reduce((s, v) => s + v, 0) / window.length) * 10) / 10
+      } else {
+        d.trend = null
+      }
+    }
+    // direction: last 5 scrim days vs the 5 before
+    const scrimDays = days.filter((d) => d.scrimAvg != null)
+    const mean = (arr) => (arr.length ? Math.round((arr.reduce((s, d) => s + d.scrimAvg, 0) / arr.length) * 10) / 10 : null)
+    const last5 = scrimDays.slice(-5)
+    const prev5 = scrimDays.slice(-10, -5)
+    const recentAvg = mean(last5)
+    const priorAvg = mean(prev5)
+    const delta = recentAvg != null && priorAvg != null ? Math.round((recentAvg - priorAvg) * 10) / 10 : null
+    return { days, recentAvg, priorAvg, delta, recentN: last5.length, priorN: prev5.length, scrimDayCount: scrimDays.length }
+  }, [scoredRows])
+
   return (
     <div>
       <div className="panel">
@@ -702,6 +792,51 @@ export default function IndividualPlayerPerformance() {
                       ? ` Only ${comparison.officialTeam.series} official series vs ${activePerfOpponent} — treat the on-stage bar as directional.`
                       : ''}
                 </p>
+              </>
+            )}
+          </div>
+
+          <div className="panel">
+            <h2>Development Over Time — {player}</h2>
+            <p className="panel-caption">
+              One point per day the player played — the end-of-day average across that day&rsquo;s games, so
+              daily training reads as a trajectory instead of game-by-game noise. The blue line is each
+              day&rsquo;s <strong>scrim</strong> average; the gold line smooths it (trailing 5 scrim days) so
+              improvement, stagnation or slipping is clear at a glance; amber diamonds are <strong>official
+              (stage) days</strong>. The dashed line at 50 is this player&rsquo;s own frozen season baseline,
+              so climbing above it over time is real improvement, not a moving goalpost. A low single day can
+              be a Green (experimental) scrim rather than a drop in level — check the session before reading it
+              as a problem.
+            </p>
+            {dailyDevelopment.days.length === 0 ? (
+              <div className="empty-state">No scored games yet for {player}.</div>
+            ) : (
+              <>
+                <div className="stat-grid">
+                  <div className="stat-card">
+                    <div className="stat-label">Recent scrim level</div>
+                    <div className="stat-value">{dailyDevelopment.recentAvg ?? '—'}</div>
+                    <div className="stat-sub">avg of last {dailyDevelopment.recentN} training day{dailyDevelopment.recentN === 1 ? '' : 's'} · 50 = own average</div>
+                  </div>
+                  <div className={`stat-card ${dailyDevelopment.delta == null ? '' : dailyDevelopment.delta >= 1.5 ? 'flag-good' : dailyDevelopment.delta <= -1.5 ? 'flag-amber' : ''}`}>
+                    <div className="stat-label">Trend</div>
+                    <div className="stat-value">
+                      {dailyDevelopment.delta == null ? '—' : `${dailyDevelopment.delta > 0 ? '+' : ''}${dailyDevelopment.delta}`}
+                      {dailyDevelopment.delta != null && (
+                        <span style={{ fontSize: 13, marginLeft: 6, color: 'var(--text-dim)' }}>
+                          {dailyDevelopment.delta >= 1.5 ? 'improving' : dailyDevelopment.delta <= -1.5 ? 'slipping' : 'holding'}
+                        </span>
+                      )}
+                    </div>
+                    <div className="stat-sub">last {dailyDevelopment.recentN} vs previous {dailyDevelopment.priorN} training days</div>
+                  </div>
+                  <div className="stat-card">
+                    <div className="stat-label">Ceiling (Potential)</div>
+                    <div className="stat-value">{potential.insufficientData ? '—' : potential.potential}</div>
+                    <div className="stat-sub">their own top-games level — the target to train toward</div>
+                  </div>
+                </div>
+                <DailyDevelopmentChart days={dailyDevelopment.days} />
               </>
             )}
           </div>
