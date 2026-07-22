@@ -471,6 +471,7 @@ export default function IndividualPlayerPerformance() {
   const [player, setPlayer] = useState(ROSTER_PLAYERS[0])
   const [sleepMode, setSleepMode] = useState('rolling') // 'rolling' | 'sameNight'
   const [perfOpponent, setPerfOpponent] = useState('all') // 'all' | canonical opponent name
+  const [devOpponent, setDevOpponent] = useState('all') // Development panel opponent filter
 
   // Fetch ALL grid_player_games rows (both teams, no is_sentinels filter) so we
   // can look up the opposing same-role player's net worth for the Performance
@@ -657,6 +658,12 @@ export default function IndividualPlayerPerformance() {
     ? perfOpponent
     : defaultOpponent
 
+  // Development-panel opponent filter — falls back to All if the selected team
+  // isn't in this player's list (e.g. after switching players).
+  const activeDevOpponent = devOpponent !== 'all' && opponentBreakdown.some((o) => o.name === devOpponent)
+    ? devOpponent
+    : 'all'
+
   // The four data points: this player's average Index in SCRIM and in Official,
   // each computed (a) vs the selected team only and (b) vs every OTHER team
   // (the selected team removed from that baseline). SCRIM and Official are kept
@@ -695,8 +702,15 @@ export default function IndividualPlayerPerformance() {
   // before. Baseline stays frozen (SEASON_CUTOFF_DATE), so a rising line is real
   // improvement, not a moving goalpost.
   const dailyDevelopment = useMemo(() => {
+    // Optionally restrict to one opponent so a run of easy scrim partners can't
+    // inflate (or a hard stretch deflate) the daily trend. Floor/ceiling/50 stay
+    // the player's OVERALL range (from tilt/potential) — the selected opponent's
+    // days are read against that fixed range, not a wobbly one-opponent baseline.
+    const devRows = activeDevOpponent === 'all'
+      ? scoredRows
+      : scoredRows.filter((r) => canonicalOpponentName(r.opponentName) === activeDevOpponent)
     const byDate = new Map()
-    for (const r of scoredRows) {
+    for (const r of devRows) {
       if (!r.date) continue
       if (!byDate.has(r.date)) byDate.set(r.date, { date: r.date, scrimSum: 0, scrimN: 0, offSum: 0, offN: 0, opponents: new Set() })
       const e = byDate.get(r.date)
@@ -746,7 +760,7 @@ export default function IndividualPlayerPerformance() {
       firstLabel: days.length ? days[0].label : null,
       boundaryLabel: boundaryDay ? boundaryDay.label : null,
     }
-  }, [scoredRows])
+  }, [scoredRows, activeDevOpponent])
 
   return (
     <div>
@@ -831,10 +845,26 @@ export default function IndividualPlayerPerformance() {
               divider is the historical baseline that <em>defines</em> that 50, so it sits on the line by
               design; everything right of it is Summer-split prep (July onward) — the part that can actually
               climb above the 50 or slip below it. A low single day can be a Green (experimental) scrim rather
-              than a real drop — check the session before reading it as a problem.
+              than a real drop — check the session before reading it as a problem. Filter to one opponent to
+              stop a run of easy (or hard) scrim partners inflating or deflating the trend — the floor / 50 /
+              ceiling range stays the player&rsquo;s overall history so the opponent&rsquo;s days are read
+              against their true range.
             </p>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--text-dim)', marginBottom: 14, maxWidth: 420 }}>
+              Opponent
+              <select value={activeDevOpponent} onChange={(e) => setDevOpponent(e.target.value)}>
+                <option value="all">All opponents</option>
+                {opponentBreakdown.map((o) => (
+                  <option key={o.name} value={o.name}>
+                    {o.name} — {o.scrimGames} scrim game{o.scrimGames === 1 ? '' : 's'}, {o.officialGames} official game{o.officialGames === 1 ? '' : 's'}
+                  </option>
+                ))}
+              </select>
+            </label>
             {dailyDevelopment.days.length === 0 ? (
-              <div className="empty-state">No scored games yet for {player}.</div>
+              <div className="empty-state">
+                No scored games for {player}{activeDevOpponent === 'all' ? '' : ` vs ${activeDevOpponent}`} yet.
+              </div>
             ) : (
               <>
                 <div className="stat-grid">
