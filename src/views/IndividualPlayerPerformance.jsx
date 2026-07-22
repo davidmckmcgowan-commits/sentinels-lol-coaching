@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import {
   BarChart, Bar, Cell, LabelList, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, ComposedChart, Line, ReferenceLine, Legend,
+  ResponsiveContainer, ComposedChart, Line, ReferenceLine, ReferenceArea, Legend,
 } from 'recharts'
 import { supabase } from '../lib/supabaseClient.js'
 import { useSupabaseQuery, fetchAllRows } from '../lib/useSupabaseQuery.js'
@@ -254,16 +254,28 @@ function OpponentComparisonChart({ data, opponentName }) {
 // Blue line = that day's scrim average; gold line = trailing-5-scrim-day smooth
 // (the trend read); amber diamonds = official (stage) days. 50 = frozen own avg.
 
-function DailyDevelopmentChart({ days }) {
+function DailyDevelopmentChart({ days, floor, ceiling, boundaryLabel, firstLabel }) {
   if (!days || days.length === 0) return <div className="empty-state">No scored games yet for this player.</div>
   return (
-    <div className="chart-wrap" style={{ height: 340 }}>
+    <div className="chart-wrap" style={{ height: 360 }}>
       <ResponsiveContainer width="100%" height="100%">
-        <ComposedChart data={days} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+        <ComposedChart data={days} margin={{ top: 16, right: 72, left: 0, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#2a2f3a" />
+          {boundaryLabel && firstLabel && (
+            <ReferenceArea x1={firstLabel} x2={boundaryLabel} fill="#5b8def" fillOpacity={0.05} />
+          )}
           <XAxis dataKey="label" stroke="#9aa1ae" fontSize={10} minTickGap={28} />
-          <YAxis domain={[0, 100]} stroke="#9aa1ae" fontSize={12} label={{ value: 'Avg Index', angle: -90, position: 'insideLeft', fill: '#676f7d', fontSize: 11 }} />
-          <ReferenceLine y={50} stroke="#676f7d" strokeDasharray="4 4" label={{ value: 'own average', position: 'insideTopRight', fill: '#676f7d', fontSize: 10 }} />
+          <YAxis domain={[0, 100]} stroke="#9aa1ae" fontSize={12} label={{ value: 'Performance Index', angle: -90, position: 'insideLeft', fill: '#676f7d', fontSize: 11 }} />
+          {ceiling != null && (
+            <ReferenceLine y={ceiling} stroke="#3aa76d" strokeDasharray="5 3" label={{ value: `ceiling ${ceiling}`, position: 'right', fill: '#3aa76d', fontSize: 10 }} />
+          )}
+          <ReferenceLine y={50} stroke="#c9ccd2" strokeDasharray="4 4" label={{ value: 'your 50', position: 'right', fill: '#c9ccd2', fontSize: 10 }} />
+          {floor != null && (
+            <ReferenceLine y={floor} stroke="#e0a940" strokeDasharray="5 3" label={{ value: `floor ${floor}`, position: 'right', fill: '#e0a940', fontSize: 10 }} />
+          )}
+          {boundaryLabel && (
+            <ReferenceLine x={boundaryLabel} stroke="#8a6fd4" strokeWidth={1.5} label={{ value: 'Summer prep →', position: 'insideTopLeft', fill: '#b39ee0', fontSize: 10 }} />
+          )}
           <Legend wrapperStyle={{ fontSize: 11 }} />
           <Tooltip
             contentStyle={{ background: '#171a21', border: '1px solid #2a2f3a', fontSize: 12 }}
@@ -724,7 +736,16 @@ export default function IndividualPlayerPerformance() {
     const recentAvg = mean(last5)
     const priorAvg = mean(prev5)
     const delta = recentAvg != null && priorAvg != null ? Math.round((recentAvg - priorAvg) * 10) / 10 : null
-    return { days, recentAvg, priorAvg, delta, recentN: last5.length, priorN: prev5.length, scrimDayCount: scrimDays.length }
+    // Boundary between the historical baseline (defines 50) and the Summer-split
+    // prep block (July 7 onward, > SEASON_CUTOFF_DATE) — the part that can move.
+    const boundaryDay = days.find((d) => d.date > SEASON_CUTOFF_DATE)
+    return {
+      days,
+      recentAvg, priorAvg, delta,
+      recentN: last5.length, priorN: prev5.length, scrimDayCount: scrimDays.length,
+      firstLabel: days.length ? days[0].label : null,
+      boundaryLabel: boundaryDay ? boundaryDay.label : null,
+    }
   }, [scoredRows])
 
   return (
@@ -801,12 +822,16 @@ export default function IndividualPlayerPerformance() {
             <p className="panel-caption">
               One point per day the player played — the end-of-day average across that day&rsquo;s games, so
               daily training reads as a trajectory instead of game-by-game noise. The blue line is each
-              day&rsquo;s <strong>scrim</strong> average; the gold line smooths it (trailing 5 scrim days) so
-              improvement, stagnation or slipping is clear at a glance; amber diamonds are <strong>official
-              (stage) days</strong>. The dashed line at 50 is this player&rsquo;s own frozen season baseline,
-              so climbing above it over time is real improvement, not a moving goalpost. A low single day can
-              be a Green (experimental) scrim rather than a drop in level — check the session before reading it
-              as a problem.
+              day&rsquo;s <strong>scrim</strong> average; the gold line smooths it (trailing 5 scrim days);
+              amber diamonds are <strong>official (stage) days</strong>. The three dashed guides are this
+              player&rsquo;s range: the grey <strong>&ldquo;your 50&rdquo;</strong> line is their historical
+              middle — the average of their highs and lows through the end of June, not a floor — with their
+              typical bad-game <strong>floor</strong> (amber) below it and their <strong>ceiling</strong>
+              (Potential, green) above. Everything left of the purple <strong>&ldquo;Summer prep&rdquo;</strong>
+              divider is the historical baseline that <em>defines</em> that 50, so it sits on the line by
+              design; everything right of it is Summer-split prep (July onward) — the part that can actually
+              climb above the 50 or slip below it. A low single day can be a Green (experimental) scrim rather
+              than a real drop — check the session before reading it as a problem.
             </p>
             {dailyDevelopment.days.length === 0 ? (
               <div className="empty-state">No scored games yet for {player}.</div>
@@ -816,7 +841,7 @@ export default function IndividualPlayerPerformance() {
                   <div className="stat-card">
                     <div className="stat-label">Recent scrim level</div>
                     <div className="stat-value">{dailyDevelopment.recentAvg ?? '—'}</div>
-                    <div className="stat-sub">avg of last {dailyDevelopment.recentN} training day{dailyDevelopment.recentN === 1 ? '' : 's'} · 50 = own average</div>
+                    <div className="stat-sub">avg of last {dailyDevelopment.recentN} training day{dailyDevelopment.recentN === 1 ? '' : 's'} · 50 = historical middle</div>
                   </div>
                   <div className={`stat-card ${dailyDevelopment.delta == null ? '' : dailyDevelopment.delta >= 1.5 ? 'flag-good' : dailyDevelopment.delta <= -1.5 ? 'flag-amber' : ''}`}>
                     <div className="stat-label">Trend</div>
@@ -831,12 +856,23 @@ export default function IndividualPlayerPerformance() {
                     <div className="stat-sub">last {dailyDevelopment.recentN} vs previous {dailyDevelopment.priorN} training days</div>
                   </div>
                   <div className="stat-card">
+                    <div className="stat-label">Floor (typical bad game)</div>
+                    <div className="stat-value">{tilt.insufficientData ? '—' : tilt.badGameThreshold}</div>
+                    <div className="stat-sub">low end of their range — bottom-quartile game</div>
+                  </div>
+                  <div className="stat-card">
                     <div className="stat-label">Ceiling (Potential)</div>
                     <div className="stat-value">{potential.insufficientData ? '—' : potential.potential}</div>
-                    <div className="stat-sub">their own top-games level — the target to train toward</div>
+                    <div className="stat-sub">top of their range — the target to train toward</div>
                   </div>
                 </div>
-                <DailyDevelopmentChart days={dailyDevelopment.days} />
+                <DailyDevelopmentChart
+                  days={dailyDevelopment.days}
+                  floor={tilt.insufficientData ? null : tilt.badGameThreshold}
+                  ceiling={potential.insufficientData ? null : potential.potential}
+                  boundaryLabel={dailyDevelopment.boundaryLabel}
+                  firstLabel={dailyDevelopment.firstLabel}
+                />
               </>
             )}
           </div>
