@@ -9,6 +9,7 @@ import SleepDebtAnalysis from './views/SleepDebtAnalysis.jsx'
 import IndividualPlayerPerformance from './views/IndividualPlayerPerformance.jsx'
 import Interventions from './views/Interventions.jsx'
 import WinConditions from './views/WinConditions.jsx'
+import GamePrep from './views/GamePrep.jsx'
 
 const TABS = [
   { key: 'sessions', label: 'Team Session Dashboard' },
@@ -19,6 +20,7 @@ const TABS = [
   { key: 'sleepDebt', label: 'Sleep Debt Analysis' },
   { key: 'individualPerf', label: 'Player Performance Dashboard' },
   { key: 'winConditions', label: 'Win Conditions' },
+  { key: 'gamePrep', label: 'Game Prep (Trial)' },
   { key: 'interventions', label: 'Pre-Official Interventions' },
 ]
 
@@ -59,6 +61,7 @@ function App() {
         {activeTab === 'sleepDebt' && <SleepDebtAnalysis />}
         {activeTab === 'individualPerf' && <IndividualPlayerPerformance />}
         {activeTab === 'winConditions' && <WinConditions />}
+        {activeTab === 'gamePrep' && <GamePrep />}
         {activeTab === 'interventions' && <Interventions />}
       </main>
     </>
