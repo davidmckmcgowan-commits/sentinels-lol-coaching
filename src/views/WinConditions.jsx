@@ -34,6 +34,7 @@ function condition(games, label, testFn, note) {
 export default function WinConditions() {
   const [sessionFilter, setSessionFilter] = useState('all')
   const [opponent, setOpponent] = useState('all')
+  const [indivPlayer, setIndivPlayer] = useState('Impact')
 
   const { data: rawGames, loading, error } = useSupabaseQuery(
     () => fetchAllRows(() =>
@@ -46,7 +47,7 @@ export default function WinConditions() {
   const { data: rawPlayers } = useSupabaseQuery(
     () => fetchAllRows(() =>
       supabase.from('grid_player_games')
-        .select('player, gold_diff_15, cs_diff_15, is_sentinels, grid_games!inner(sentinels_won, riot_enriched, grid_series!inner(opponent_name, series_type))')
+        .select('player, gold_diff_15, cs_diff_15, cs_per_min, champ_damage_share, kill_participation, vision_per_min, kills, deaths, assists, is_sentinels, grid_games!inner(sentinels_won, riot_enriched, grid_series!inner(opponent_name, series_type))')
         .eq('is_sentinels', true)),
     []
   )
@@ -58,7 +59,12 @@ export default function WinConditions() {
 
   const players = useMemo(() => (rawPlayers || [])
     .filter((p) => p.grid_games && p.grid_games.riot_enriched && p.grid_games.grid_series && p.gold_diff_15 != null)
-    .map((p) => ({ player: p.player, gold_diff_15: p.gold_diff_15, won: p.grid_games.sentinels_won, opponent: canonicalOpponentName(p.grid_games.grid_series.opponent_name), type: p.grid_games.grid_series.series_type })), [rawPlayers])
+    .map((p) => ({
+      player: p.player, gold_diff_15: p.gold_diff_15, cs_diff_15: p.cs_diff_15,
+      cs_per_min: p.cs_per_min, damage_share: p.champ_damage_share, kp: p.kill_participation, vision_per_min: p.vision_per_min,
+      kda: p.deaths ? ((p.kills ?? 0) + (p.assists ?? 0)) / p.deaths : ((p.kills ?? 0) + (p.assists ?? 0)),
+      won: p.grid_games.sentinels_won, opponent: canonicalOpponentName(p.grid_games.grid_series.opponent_name), type: p.grid_games.grid_series.series_type,
+    })), [rawPlayers])
 
   const opponentOptions = useMemo(() => {
     const counts = new Map()
@@ -131,6 +137,29 @@ export default function WinConditions() {
     const wBehind = pct(behind.filter((p) => p.won).length, behind.length)
     return { name, wAhead, wBehind, nAhead: ahead.length, nBehind: behind.length, lift: wAhead != null && wBehind != null ? wAhead - wBehind : null }
   }).filter((r) => r.lift != null).sort((a, b) => b.lift - a.lift), [filteredPlayers])
+
+  // Selected player's stat profile in team wins vs team losses
+  const indivProfile = useMemo(() => {
+    const rows = filteredPlayers.filter((p) => p.player === indivPlayer)
+    const w = rows.filter((p) => p.won), l = rows.filter((p) => !p.won)
+    const metric = (label, key, dp = 1, unit = '') => ({
+      label, unit,
+      win: round(avg(w.map((p) => p[key])), dp),
+      loss: round(avg(l.map((p) => p[key])), dp),
+    })
+    return {
+      nWin: w.length, nLoss: l.length,
+      rows: [
+        metric('CS per min', 'cs_per_min', 1),
+        metric('KDA', 'kda', 1),
+        metric('Kill participation', 'kp', 0, '%'),
+        metric('Damage share', 'damage_share', 0, '%'),
+        metric('Gold diff @15', 'gold_diff_15', 0),
+        metric('CS diff @15', 'cs_diff_15', 1),
+        metric('Vision / min', 'vision_per_min', 2),
+      ],
+    }
+  }, [filteredPlayers, indivPlayer])
 
   // Per-opponent record (respects session filter, ignores opponent filter)
   const byOpponent = useMemo(() => {
@@ -291,11 +320,47 @@ export default function WinConditions() {
               </div>
 
               <div className="panel">
+                <h2>Individual — wins vs losses</h2>
+                <p className="panel-caption">
+                  How each player&rsquo;s own game looks in team wins vs team losses, {scopeLabel}. A metric that
+                  is much higher in wins than losses is one this player tends to drive the result with; one
+                  that&rsquo;s similar in both means their level doesn&rsquo;t change much between wins and losses
+                  (they&rsquo;re carried or held back by the rest). All from the enriched Riot data.
+                </p>
+                <div className="player-tabs" style={{ marginBottom: 14 }}>
+                  {ROSTER.map((p) => (
+                    <button key={p} type="button" className={`player-tab ${indivPlayer === p ? 'active' : ''}`} onClick={() => setIndivPlayer(p)}>{p}</button>
+                  ))}
+                </div>
+                <div className="table-scroll">
+                  <table>
+                    <thead><tr><th>Metric</th><th style={{ textAlign: 'right' }}>In wins ({indivProfile.nWin})</th><th style={{ textAlign: 'right' }}>In losses ({indivProfile.nLoss})</th><th style={{ textAlign: 'right' }}>Gap</th></tr></thead>
+                    <tbody>
+                      {indivProfile.rows.map((r) => {
+                        const gap = r.win != null && r.loss != null ? round(r.win - r.loss, r.unit === '%' ? 0 : 1) : null
+                        return (
+                          <tr key={r.label}>
+                            <td>{r.label}</td>
+                            <td style={{ textAlign: 'right', color: '#3aa76d', fontWeight: 600 }}>{r.win ?? '—'}{r.unit}</td>
+                            <td style={{ textAlign: 'right', color: '#e0a940', fontWeight: 600 }}>{r.loss ?? '—'}{r.unit}</td>
+                            <td style={{ textAlign: 'right', color: 'var(--text-dim)' }}>{gap != null ? `${gap > 0 ? '+' : ''}${gap}${r.unit}` : '—'}</td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="panel">
                 <h2>Whose early lead predicts the win</h2>
                 <p className="panel-caption">
-                  For each player, our win rate in games where they were ahead in gold at 15 vs behind, {scopeLabel}.
-                  A big positive swing means when this player wins their lane early, we tend to win the game — i.e.
-                  their early game is a lever for the whole team.
+                  These are <strong>two separate groups of games</strong>, not two halves of one — so the two
+                  percentages are not meant to add to 100%. Left column: of the games where this player was
+                  <em> ahead</em> in gold at 15 (game count in brackets), the share the team won. Right column:
+                  the same for games where they were <em>behind</em>. The <strong>swing</strong> is the
+                  difference — a big positive swing means when this player wins their lane early, the team tends
+                  to win, so their early game is a real lever. Scope: {scopeLabel}.
                 </p>
                 <div className="table-scroll">
                   <table>
@@ -304,8 +369,8 @@ export default function WinConditions() {
                       {laneImpact.map((r) => (
                         <tr key={r.name}>
                           <td>{r.name}</td>
-                          <td style={{ textAlign: 'right' }}>{r.wAhead ?? '—'}% <span style={{ color: 'var(--text-faint)', fontSize: 11 }}>({r.nAhead})</span></td>
-                          <td style={{ textAlign: 'right' }}>{r.wBehind ?? '—'}% <span style={{ color: 'var(--text-faint)', fontSize: 11 }}>({r.nBehind})</span></td>
+                          <td style={{ textAlign: 'right' }}>{r.wAhead ?? '—'}% <span style={{ color: 'var(--text-faint)', fontSize: 11 }}>({r.nAhead} game{r.nAhead === 1 ? '' : 's'})</span></td>
+                          <td style={{ textAlign: 'right' }}>{r.wBehind ?? '—'}% <span style={{ color: 'var(--text-faint)', fontSize: 11 }}>({r.nBehind} game{r.nBehind === 1 ? '' : 's'})</span></td>
                           <td style={{ textAlign: 'right', color: (r.lift ?? 0) >= 0 ? '#3aa76d' : '#e0524a', fontWeight: 600 }}>{r.lift > 0 ? '+' : ''}{r.lift}%</td>
                         </tr>
                       ))}
