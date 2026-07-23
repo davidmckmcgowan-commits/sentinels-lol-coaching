@@ -100,10 +100,26 @@ export default function WinConditions() {
       condition(filtered, 'Get First Tower', (g) => g.first_tower_sentinels === true ? true : g.first_tower_sentinels === false ? false : null),
       condition(filtered, 'Ahead in gold @15', (g) => g.gold_diff_15 == null ? null : g.gold_diff_15 > 0),
       condition(filtered, 'Ahead in CS @15', (g) => g.cs_diff_15 == null ? null : g.cs_diff_15 > 0),
-      condition(filtered, 'Win the dragon race', (g) => (g.sentinels_dragons == null || g.opponent_dragons == null) ? null : g.sentinels_dragons > g.opponent_dragons),
-      condition(filtered, 'Win the grub race', (g) => (g.sentinels_grubs == null || g.opponent_grubs == null) ? null : g.sentinels_grubs > g.opponent_grubs),
       condition(filtered, 'Take first Herald', (g) => g.sentinels_heralds == null ? null : g.sentinels_heralds > 0),
     ].filter((c) => c.lift != null).sort((a, b) => b.lift - a.lift)
+  }, [filtered])
+
+  // Win rate by number of dragons / void grubs taken
+  const ladders = useMemo(() => {
+    const build = (field, buckets) => buckets.map((b) => {
+      const gs = filtered.filter((g) => g[field] != null && b.test(g[field]))
+      return { label: b.label, games: gs.length, win: pct(gs.filter((g) => g.sentinels_won).length, gs.length) }
+    })
+    return {
+      dragons: build('sentinels_dragons', [
+        { label: '0', test: (n) => n === 0 }, { label: '1', test: (n) => n === 1 }, { label: '2', test: (n) => n === 2 },
+        { label: '3', test: (n) => n === 3 }, { label: '4+', test: (n) => n >= 4 },
+      ]),
+      grubs: build('sentinels_grubs', [
+        { label: '0', test: (n) => n === 0 }, { label: '1', test: (n) => n === 1 },
+        { label: '2', test: (n) => n === 2 }, { label: '3+', test: (n) => n >= 3 },
+      ]),
+    }
   }, [filtered])
 
   // Whose lane lead most predicts a win
@@ -235,6 +251,42 @@ export default function WinConditions() {
                       ))}
                     </tbody>
                   </table>
+                </div>
+              </div>
+
+              <div className="panel">
+                <h2>Win rate by objectives secured</h2>
+                <p className="panel-caption">
+                  Win rate at each number of dragons and void grubs taken, {scopeLabel}. Dragons tend to be a
+                  clean ladder — every one secured lifts the win rate. Each bar shows its game count in
+                  brackets; a high rate on a tiny sample is directional.
+                </p>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24 }}>
+                  {[{ title: 'By dragons taken', data: ladders.dragons, color: '#e0524a' }, { title: 'By void grubs taken', data: ladders.grubs, color: '#8a6fd4' }].map((chart) => (
+                    <div key={chart.title} style={{ flex: '1 1 320px', minWidth: 280 }}>
+                      <div style={{ fontSize: 13, color: 'var(--text-dim)', marginBottom: 6 }}>{chart.title}</div>
+                      <div className="chart-wrap" style={{ height: 240 }}>
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={chart.data} margin={{ top: 18, right: 12, left: 0, bottom: 0 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#2a2f3a" />
+                            <XAxis dataKey="label" stroke="#9aa1ae" fontSize={12} />
+                            <YAxis domain={[0, 100]} stroke="#9aa1ae" fontSize={12} unit="%" />
+                            <ReferenceLine y={50} stroke="#676f7d" strokeDasharray="4 4" />
+                            <Tooltip contentStyle={{ background: '#171a21', border: '1px solid #2a2f3a', fontSize: 12 }}
+                              formatter={(v, n, p) => [`${v ?? '—'}% win (n=${p.payload.games})`, 'Win rate']} />
+                            <Bar dataKey="win" radius={[4, 4, 0, 0]} fill={chart.color}>
+                              <LabelList position="top" content={(props) => {
+                                const { x, y, width, index } = props
+                                const d = chart.data[index]
+                                if (!d || d.win == null || x == null) return null
+                                return <text x={x + width / 2} y={y - 5} fill="#e6e8ec" fontSize={11} textAnchor="middle">{d.win}% ({d.games})</text>
+                              }} />
+                            </Bar>
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
 
