@@ -120,7 +120,10 @@ function GoalCard({ goal, lib, series, games, prows }) {
           {onTrack ? 'on track' : 'below target'}
         </span>
       </div>
-      <div style={{ fontSize: 12, color: 'var(--text-faint)', margin: '3px 0 10px' }}>{goal.intent}</div>
+      <div style={{ fontSize: 12, color: 'var(--text-faint)', margin: '3px 0 2px' }}>{goal.intent}</div>
+      <div style={{ fontSize: 11, color: 'var(--text-faint)', margin: '0 0 10px', fontStyle: 'italic' }}>
+        Measures: {meta.description || meta.label || goal.metric_key}
+      </div>
 
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 16, flexWrap: 'wrap' }}>
         <div>
