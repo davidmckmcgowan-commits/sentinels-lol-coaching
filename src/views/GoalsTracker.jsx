@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { supabase } from '../lib/supabaseClient.js'
 import { useSupabaseQuery, fetchAllRows } from '../lib/useSupabaseQuery.js'
 
@@ -192,6 +192,25 @@ export default function GoalsTracker() {
   const cycleOpp = (goals && goals[0]?.cycle_opponent) || null
   const cycleDate = (goals && goals[0]?.cycle_official_date) || null
 
+  const [newScope, setNewScope] = useState('team')
+  const [newPlayer, setNewPlayer] = useState('Impact')
+  const [newText, setNewText] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const { data: suggestions, refetch: refetchSug } = useSupabaseQuery(
+    () => supabase.from('goal_suggestions').select('*').eq('status', 'proposed').order('created_at', { ascending: false }), []
+  )
+  async function submitGoal() {
+    if (!newText.trim()) return
+    setSubmitting(true)
+    try {
+      await supabase.from('goal_suggestions').insert({ scope: newScope, player: newScope === 'player' ? newPlayer : null, text: newText.trim() })
+      setNewText('')
+    } finally {
+      setSubmitting(false)
+      refetchSug()
+    }
+  }
+
   return (
     <div className="panel">
       <h2>Goals</h2>
@@ -225,6 +244,65 @@ export default function GoalsTracker() {
           </div>
         </>
       )}
+
+      <div style={{ marginTop: 26, borderTop: '1px solid var(--border, #2b2b33)', paddingTop: 18 }}>
+        <h3 style={{ marginTop: 0 }}>Propose a goal</h3>
+        <p className="panel-caption" style={{ marginTop: 0 }}>
+          Coaches: drop a rough goal here in plain language. It lands in the list below, and we shape it into a
+          measurable SMART goal in chat before it starts being tracked.
+        </p>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+          <div className="filter-field">
+            <label>For</label>
+            <select className="search-input" value={newScope} onChange={(e) => setNewScope(e.target.value)}>
+              <option value="team">Team</option>
+              <option value="player">Player</option>
+            </select>
+          </div>
+          {newScope === 'player' && (
+            <div className="filter-field">
+              <label>Player</label>
+              <select className="search-input" value={newPlayer} onChange={(e) => setNewPlayer(e.target.value)}>
+                {ROSTER.map((r) => <option key={r} value={r}>{r}</option>)}
+              </select>
+            </div>
+          )}
+          <div className="filter-field" style={{ flex: 1, minWidth: 240 }}>
+            <label>Goal</label>
+            <input
+              className="search-input"
+              placeholder="e.g. better vision control bot side"
+              value={newText}
+              onChange={(e) => setNewText(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') submitGoal() }}
+            />
+          </div>
+          <button
+            type="button"
+            disabled={submitting || !newText.trim()}
+            onClick={submitGoal}
+            style={{ padding: '10px 18px', borderRadius: 8, border: 'none', background: submitting || !newText.trim() ? '#555' : '#e01e37', color: '#fff', fontWeight: 600, cursor: submitting ? 'default' : 'pointer' }}
+          >
+            {submitting ? 'Adding…' : 'Add goal'}
+          </button>
+        </div>
+
+        {suggestions && suggestions.length > 0 && (
+          <div style={{ marginTop: 16 }}>
+            <div style={LBL}>Pending — to shape into SMART goals in chat</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+              {suggestions.map((s) => (
+                <div key={s.id} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '8px 12px', borderRadius: 8, background: 'var(--panel-2, #17171d)', border: '1px solid var(--border, #2b2b33)' }}>
+                  <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 20, background: '#2a2a33', color: 'var(--text-faint)', whiteSpace: 'nowrap' }}>
+                    {s.scope === 'player' ? s.player : 'Team'}
+                  </span>
+                  <span style={{ fontSize: 13 }}>{s.text}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
