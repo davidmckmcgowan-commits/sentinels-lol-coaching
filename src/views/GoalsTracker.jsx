@@ -1,0 +1,214 @@
+import { useMemo } from 'react'
+import { supabase } from '../lib/supabaseClient.js'
+import { useSupabaseQuery, fetchAllRows } from '../lib/useSupabaseQuery.js'
+
+const ROLE_ORDER = ['TOP', 'JUNGLE', 'MIDDLE', 'BOTTOM', 'UTILITY']
+const WINDOW_DAYS = 12 // how many recent scrim days to trend
+
+const avg = (arr, f) => { const v = arr.map(f).filter((x) => x != null); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null }
+const rate = (arr, f) => { const v = arr.map(f).filter((x) => x != null); return v.length ? (v.filter(Boolean).length / v.length) * 100 : null }
+
+// value of a metric over a set of team-game rows and/or player rows
+function metricValue(key, games, prows) {
+  switch (key) {
+    case 'team_gold_diff_15': return avg(games, (g) => g.gold_diff_15)
+    case 'team_cs_diff_15': return avg(games, (g) => g.cs_diff_15)
+    case 'first_tower_rate': return rate(games, (g) => g.first_tower_sentinels)
+    case 'first_dragon_rate': return rate(games, (g) => (g.sentinels_dragons != null && g.opponent_dragons != null ? g.sentinels_dragons > g.opponent_dragons : null))
+    case 'dragon_control_rate': return rate(games, (g) => (g.sentinels_dragons != null && g.opponent_dragons != null ? g.sentinels_dragons > g.opponent_dragons : null))
+    case 'grub_majority_rate': return rate(games, (g) => (g.sentinels_grubs != null ? g.sentinels_grubs >= 4 : null))
+    case 'player_cs_diff_15': return avg(prows, (p) => p.cs_diff_15)
+    case 'player_gold_diff_15': return avg(prows, (p) => p.gold_diff_15)
+    case 'player_kp': return avg(prows, (p) => p.kill_participation)
+    case 'player_cs_per_min': return avg(prows, (p) => p.cs_per_min)
+    case 'player_damage_share': return avg(prows, (p) => p.champ_damage_share)
+    case 'player_vision_score': return avg(prows, (p) => p.vision_score)
+    default: return null
+  }
+}
+
+const fmt = (v, unit) => {
+  if (v == null) return '—'
+  if (unit === '%') return `${Math.round(v)}%`
+  if (unit === 'gold') return (v >= 0 ? '+' : '') + Math.round(v)
+  if (unit === 'CS') return (v >= 0 ? '+' : '') + v.toFixed(1)
+  if (unit === 'CS/min') return v.toFixed(1)
+  return Math.round(v * 10) / 10
+}
+
+function Sparkline({ points, target }) {
+  const vals = points.map((p) => p.value).filter((x) => x != null)
+  if (vals.length < 2) return <span style={{ color: 'var(--text-faint)', fontSize: 11 }}>not enough days yet</span>
+  const all = [...vals, target]
+  const min = Math.min(...all), max = Math.max(...all)
+  const span = max - min || 1
+  const W = 150, H = 34
+  const step = W / (points.length - 1)
+  const y = (v) => H - ((v - min) / span) * (H - 6) - 3
+  const path = points.map((p, i) => (p.value == null ? null : `${i === 0 ? 'M' : 'L'}${(i * step).toFixed(1)},${y(p.value).toFixed(1)}`)).filter(Boolean).join(' ')
+  return (
+    <svg width={W} height={H} style={{ overflow: 'visible' }}>
+      <line x1="0" y1={y(target)} x2={W} y2={y(target)} stroke="#c9a227" strokeWidth="1" strokeDasharray="3 3" opacity="0.7" />
+      <path d={path} fill="none" stroke="#4c8bf5" strokeWidth="2" />
+      {points.map((p, i) => p.value != null && (
+        <circle key={i} cx={i * step} cy={y(p.value)} r={i === points.length - 1 ? 3.5 : 2} fill={i === points.length - 1 ? '#4c8bf5' : '#4c8bf5aa'} />
+      ))}
+    </svg>
+  )
+}
+
+function GoalCard({ goal, lib, series, games, prows }) {
+  const meta = lib[goal.metric_key] || {}
+  const unit = meta.unit
+  const higher = meta.higher_is_better !== false
+
+  // recent scrim days (enriched), ascending
+  const days = useMemo(() => {
+    const dateSet = new Set()
+    for (const g of games) {
+      const s = series[g.grid_series_id]
+      if (s && s.series_type === 'SCRIM' && g.riot_enriched) dateSet.add(s.series_date)
+    }
+    return [...dateSet].sort().slice(-WINDOW_DAYS)
+  }, [games, series])
+
+  const points = useMemo(() => days.map((date) => {
+    const dayGames = games.filter((g) => { const s = series[g.grid_series_id]; return s && s.series_date === date && s.series_type === 'SCRIM' && g.riot_enriched })
+    const dayGameIds = new Set(dayGames.map((g) => g.id))
+    const dayPlayer = goal.scope === 'player' ? prows.filter((p) => p.player === goal.player && dayGameIds.has(p.game_id)) : []
+    return { date, value: metricValue(goal.metric_key, dayGames, dayPlayer) }
+  }), [days, games, series, prows, goal])
+
+  const withVals = points.filter((p) => p.value != null)
+  const latest = withVals.length ? withVals[withVals.length - 1].value : null
+  const prev = withVals.length > 1 ? withVals[withVals.length - 2].value : null
+
+  // week-to-date: metric over all window games at once
+  const wtd = useMemo(() => {
+    const winGames = games.filter((g) => { const s = series[g.grid_series_id]; return s && days.includes(s.series_date) && s.series_type === 'SCRIM' && g.riot_enriched })
+    const winIds = new Set(winGames.map((g) => g.id))
+    const winPlayer = goal.scope === 'player' ? prows.filter((p) => p.player === goal.player && winIds.has(p.game_id)) : []
+    return metricValue(goal.metric_key, winGames, winPlayer)
+  }, [games, series, days, prows, goal])
+
+  const target = Number(goal.target_value)
+  const onTrack = wtd != null && (higher ? wtd >= target : wtd <= target)
+  const improving = latest != null && prev != null ? (higher ? latest > prev : latest < prev) : null
+  const trendColor = improving == null ? 'var(--text-faint)' : improving ? '#3fb950' : '#e5534b'
+  const trendArrow = improving == null ? '' : improving ? '▲' : '▼'
+
+  return (
+    <div style={{ border: '1px solid var(--border, #2b2b33)', borderRadius: 10, padding: 14, background: 'var(--panel-2, #17171d)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
+        <div style={{ fontWeight: 600, fontSize: 14 }}>
+          {goal.scope === 'player' && <span style={{ color: '#c9a227', marginRight: 6 }}>{goal.player}</span>}
+          {meta.label || goal.metric_key}
+        </div>
+        <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 20, background: onTrack ? '#12351f' : '#3a1d1d', color: onTrack ? '#3fb950' : '#e5534b', whiteSpace: 'nowrap' }}>
+          {onTrack ? 'on track' : 'below target'}
+        </span>
+      </div>
+      <div style={{ fontSize: 12, color: 'var(--text-faint)', margin: '3px 0 10px' }}>{goal.intent}</div>
+
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 18 }}>
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Latest day</div>
+          <div style={{ fontSize: 24, fontWeight: 700 }}>
+            {fmt(latest, unit)} <span style={{ fontSize: 14, color: trendColor }}>{trendArrow}</span>
+          </div>
+        </div>
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Week-to-date</div>
+          <div style={{ fontSize: 18, fontWeight: 600 }}>{fmt(wtd, unit)}</div>
+        </div>
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Target</div>
+          <div style={{ fontSize: 18, fontWeight: 600, color: '#c9a227' }}>{fmt(target, unit)}</div>
+        </div>
+        <div style={{ marginLeft: 'auto' }}>
+          <Sparkline points={points} target={target} />
+          <div style={{ fontSize: 10, color: 'var(--text-faint)', textAlign: 'right' }}>
+            baseline {fmt(Number(goal.baseline_value), unit)}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export default function GoalsTracker() {
+  const { data: goals, loading: goalsLoading } = useSupabaseQuery(
+    () => supabase.from('prep_goals').select('*').eq('active', true), []
+  )
+  const { data: library } = useSupabaseQuery(() => supabase.from('goal_library').select('*'), [])
+  const { data: seriesRows } = useSupabaseQuery(
+    () => supabase.from('grid_series').select('grid_series_id, series_date, series_type').gte('series_date', '2026-06-15'), []
+  )
+  const { data: gameRows } = useSupabaseQuery(
+    () => fetchAllRows(() => supabase.from('grid_games').select(
+      'id, grid_series_id, riot_enriched, gold_diff_15, cs_diff_15, first_tower_sentinels, sentinels_dragons, opponent_dragons, sentinels_grubs'
+    )), []
+  )
+  const { data: playerRows } = useSupabaseQuery(
+    () => fetchAllRows(() => supabase.from('grid_player_games').select(
+      'game_id, player, cs_diff_15, gold_diff_15, cs_per_min, kill_participation, champ_damage_share, vision_score'
+    ).eq('is_sentinels', true)), []
+  )
+
+  const lib = useMemo(() => Object.fromEntries((library || []).map((l) => [l.metric_key, l])), [library])
+  const seriesById = useMemo(() => Object.fromEntries((seriesRows || []).map((s) => [s.grid_series_id, s])), [seriesRows])
+
+  // only keep player rows for games in our recent window (cuts the join down)
+  const winGameIds = useMemo(() => {
+    const ids = new Set()
+    for (const g of gameRows || []) if (seriesById[g.grid_series_id]) ids.add(g.id)
+    return ids
+  }, [gameRows, seriesById])
+  const winPlayerRows = useMemo(() => (playerRows || []).filter((p) => winGameIds.has(p.game_id)), [playerRows, winGameIds])
+  const winGames = useMemo(() => (gameRows || []).filter((g) => seriesById[g.grid_series_id]), [gameRows, seriesById])
+
+  const ROSTER = ['Impact', 'HamBak', 'DARKWINGS', 'Rahel', 'Huhi']
+  const teamGoals = (goals || []).filter((g) => g.scope === 'team')
+  const playerGoals = (goals || []).filter((g) => g.scope === 'player')
+    .sort((a, b) => ROSTER.indexOf(a.player) - ROSTER.indexOf(b.player))
+
+  const loading = goalsLoading || !gameRows || !playerRows || !seriesRows
+  const cycleOpp = (goals && goals[0]?.cycle_opponent) || null
+  const cycleDate = (goals && goals[0]?.cycle_official_date) || null
+
+  return (
+    <div className="panel">
+      <h2>Goals</h2>
+      <p className="panel-caption">
+        SMART targets for the prep week{cycleOpp ? <> — building toward <b style={{ color: 'var(--text)' }}>{cycleOpp}</b>{cycleDate ? ` (${cycleDate})` : ''}</> : ''}.
+        Measured off the day&apos;s scrims each time you sync. ▲ means the latest day moved toward target, ▼ away. Gold dashed line on each spark is the target.
+      </p>
+
+      {loading && <div className="loading-state">Loading goals…</div>}
+
+      {!loading && (!goals || goals.length === 0) && (
+        <div className="empty-state">No active goals set. Send me the goals for this week and I&apos;ll load them.</div>
+      )}
+
+      {!loading && goals && goals.length > 0 && (
+        <>
+          <h3 style={{ marginTop: 4 }}>Team</h3>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 12 }}>
+            {teamGoals.map((g) => (
+              <GoalCard key={g.id} goal={g} lib={lib} series={seriesById} games={winGames} prows={winPlayerRows} />
+            ))}
+          </div>
+
+          <h3 style={{ marginTop: 22 }}>Individual</h3>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 12 }}>
+            {playerGoals
+              .sort((a, b) => (['Impact', 'HamBak', 'DARKWINGS', 'Rahel', 'Huhi'].indexOf(a.player)) - (['Impact', 'HamBak', 'DARKWINGS', 'Rahel', 'Huhi'].indexOf(b.player)))
+              .map((g) => (
+                <GoalCard key={g.id} goal={g} lib={lib} series={seriesById} games={winGames} prows={winPlayerRows} />
+              ))}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
