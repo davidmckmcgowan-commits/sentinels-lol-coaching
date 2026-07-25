@@ -11,8 +11,10 @@ import Interventions from './views/Interventions.jsx'
 import WinConditions from './views/WinConditions.jsx'
 import GamePrep from './views/GamePrep.jsx'
 import DailySync from './views/DailySync.jsx'
+import MatchHistory from './views/MatchHistory.jsx'
 
 const TABS = [
+  { key: 'matchHistory', label: 'Match History' },
   { key: 'sessions', label: 'Team Session Dashboard' },
   { key: 'opponents', label: 'Opponent Dossier' },
   { key: 'wellbeing', label: 'Player Wellbeing' },
@@ -27,7 +29,7 @@ const TABS = [
 ]
 
 function App() {
-  const [activeTab, setActiveTab] = useState('sessions')
+  const [activeTab, setActiveTab] = useState('matchHistory')
 
   return (
     <>
@@ -55,6 +57,7 @@ function App() {
       </nav>
 
       <main>
+        {activeTab === 'matchHistory' && <MatchHistory />}
         {activeTab === 'sessions' && <TeamSessionDashboard />}
         {activeTab === 'opponents' && <OpponentDossier />}
         {activeTab === 'wellbeing' && <PlayerWellbeing />}
