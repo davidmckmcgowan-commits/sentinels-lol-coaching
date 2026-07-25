@@ -35,6 +35,15 @@ const fmt = (v, unit) => {
   if (unit === 'CS/min') return v.toFixed(1)
   return Math.round(v * 10) / 10
 }
+const fmtDelta = (d, unit) => {
+  if (d == null) return null
+  const s = d > 0 ? '+' : ''
+  if (unit === '%') return `${s}${Math.round(d)}%`
+  if (unit === 'gold') return `${s}${Math.round(d)}`
+  if (unit === 'CS' || unit === 'CS/min') return `${s}${d.toFixed(1)}`
+  return `${s}${Math.round(d * 10) / 10}`
+}
+const LBL = { fontSize: 11, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '.04em' }
 
 function Sparkline({ points, target }) {
   const vals = points.map((p) => p.value).filter((x) => x != null)
@@ -82,6 +91,9 @@ function GoalCard({ goal, lib, series, games, prows }) {
   const withVals = points.filter((p) => p.value != null)
   const latest = withVals.length ? withVals[withVals.length - 1].value : null
   const prev = withVals.length > 1 ? withVals[withVals.length - 2].value : null
+  const latestDate = withVals.length ? withVals[withVals.length - 1].date : null
+  const prevDate = withVals.length > 1 ? withVals[withVals.length - 2].date : null
+  const delta = latest != null && prev != null ? latest - prev : null
 
   // week-to-date: metric over all window games at once
   const wtd = useMemo(() => {
@@ -110,19 +122,23 @@ function GoalCard({ goal, lib, series, games, prows }) {
       </div>
       <div style={{ fontSize: 12, color: 'var(--text-faint)', margin: '3px 0 10px' }}>{goal.intent}</div>
 
-      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 18 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 16, flexWrap: 'wrap' }}>
         <div>
-          <div style={{ fontSize: 11, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Latest day</div>
-          <div style={{ fontSize: 24, fontWeight: 700 }}>
-            {fmt(latest, unit)} <span style={{ fontSize: 14, color: trendColor }}>{trendArrow}</span>
+          <div style={LBL}>Today{latestDate ? ` · ${latestDate.slice(5)}` : ''}</div>
+          <div style={{ fontSize: 26, fontWeight: 700, lineHeight: 1.1 }}>{fmt(latest, unit)}</div>
+        </div>
+        <div>
+          <div style={LBL}>vs last day{prevDate ? ` (${prevDate.slice(5)})` : ''}</div>
+          <div style={{ fontSize: 20, fontWeight: 700, color: trendColor }}>
+            {delta == null ? <span style={{ color: 'var(--text-faint)' }}>—</span> : <>{trendArrow} {fmtDelta(delta, unit)}</>}
           </div>
         </div>
         <div>
-          <div style={{ fontSize: 11, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Week-to-date</div>
+          <div style={LBL}>Week-to-date</div>
           <div style={{ fontSize: 18, fontWeight: 600 }}>{fmt(wtd, unit)}</div>
         </div>
         <div>
-          <div style={{ fontSize: 11, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Target</div>
+          <div style={LBL}>Target</div>
           <div style={{ fontSize: 18, fontWeight: 600, color: '#c9a227' }}>{fmt(target, unit)}</div>
         </div>
         <div style={{ marginLeft: 'auto' }}>
