@@ -23,6 +23,8 @@ function metricValue(key, games, prows) {
     case 'player_cs_per_min': return avg(prows, (p) => p.cs_per_min)
     case 'player_damage_share': return avg(prows, (p) => p.champ_damage_share)
     case 'player_vision_score': return avg(prows, (p) => p.vision_score)
+    case 'laners_cs_diff_15': return avg(prows, (p) => p.cs_diff_15)
+    case 'laners_damage_per_min': return avg(prows, (p) => p.champ_damage_per_min)
     default: return null
   }
 }
@@ -70,6 +72,11 @@ function GoalCard({ goal, lib, series, games, prows }) {
   const meta = lib[goal.metric_key] || {}
   const unit = meta.unit
   const higher = meta.higher_is_better !== false
+  // "laners_*" goals aggregate all Sentinels except the support (Huhi)
+  const isLaners = (goal.metric_key || '').startsWith('laners_')
+  const playersForDay = (ids) => isLaners
+    ? prows.filter((p) => p.player !== 'Huhi' && ids.has(p.game_id))
+    : goal.scope === 'player' ? prows.filter((p) => p.player === goal.player && ids.has(p.game_id)) : []
 
   // recent scrim days (enriched), ascending
   const days = useMemo(() => {
@@ -84,7 +91,7 @@ function GoalCard({ goal, lib, series, games, prows }) {
   const points = useMemo(() => days.map((date) => {
     const dayGames = games.filter((g) => { const s = series[g.grid_series_id]; return s && s.series_date === date && s.series_type === 'SCRIM' && g.riot_enriched })
     const dayGameIds = new Set(dayGames.map((g) => g.id))
-    const dayPlayer = goal.scope === 'player' ? prows.filter((p) => p.player === goal.player && dayGameIds.has(p.game_id)) : []
+    const dayPlayer = playersForDay(dayGameIds)
     return { date, value: metricValue(goal.metric_key, dayGames, dayPlayer) }
   }), [days, games, series, prows, goal])
 
@@ -99,7 +106,7 @@ function GoalCard({ goal, lib, series, games, prows }) {
   const wtd = useMemo(() => {
     const winGames = games.filter((g) => { const s = series[g.grid_series_id]; return s && days.includes(s.series_date) && s.series_type === 'SCRIM' && g.riot_enriched })
     const winIds = new Set(winGames.map((g) => g.id))
-    const winPlayer = goal.scope === 'player' ? prows.filter((p) => p.player === goal.player && winIds.has(p.game_id)) : []
+    const winPlayer = playersForDay(winIds)
     return metricValue(goal.metric_key, winGames, winPlayer)
   }, [games, series, days, prows, goal])
 
@@ -170,7 +177,7 @@ export default function GoalsTracker() {
   )
   const { data: playerRows } = useSupabaseQuery(
     () => fetchAllRows(() => supabase.from('grid_player_games').select(
-      'game_id, player, cs_diff_15, gold_diff_15, cs_per_min, kill_participation, champ_damage_share, vision_score'
+      'game_id, player, cs_diff_15, gold_diff_15, cs_per_min, kill_participation, champ_damage_share, champ_damage_per_min, vision_score'
     ).eq('is_sentinels', true)), []
   )
 
