@@ -22,6 +22,7 @@ function metricValue(key, games, prows) {
     case 'player_kp': return avg(prows, (p) => p.kill_participation)
     case 'player_cs_per_min': return avg(prows, (p) => p.cs_per_min)
     case 'player_damage_share': return avg(prows, (p) => p.champ_damage_share)
+    case 'player_damage_per_min': return avg(prows, (p) => p.champ_damage_per_min)
     case 'player_vision_score': return avg(prows, (p) => p.vision_score)
     case 'laners_cs_diff_15': return avg(prows, (p) => p.cs_diff_15)
     case 'laners_damage_per_min': return avg(prows, (p) => p.champ_damage_per_min)
@@ -110,6 +111,18 @@ function GoalCard({ goal, lib, series, games, prows }) {
     return metricValue(goal.metric_key, winGames, winPlayer)
   }, [games, series, days, prows, goal])
 
+  // for team laner goals, find the weakest individual across the window
+  const weakest = useMemo(() => {
+    if (!isLaners) return null
+    const winGames = games.filter((g) => { const s = series[g.grid_series_id]; return s && days.includes(s.series_date) && s.series_type === 'SCRIM' && g.riot_enriched })
+    const winIds = new Set(winGames.map((g) => g.id))
+    const per = ['Impact', 'HamBak', 'DARKWINGS', 'Rahel']
+      .map((pl) => ({ player: pl, value: metricValue(goal.metric_key, [], prows.filter((p) => p.player === pl && winIds.has(p.game_id))) }))
+      .filter((x) => x.value != null)
+    if (!per.length) return null
+    return per.reduce((a, b) => (b.value < a.value ? b : a))
+  }, [isLaners, games, series, days, prows, goal])
+
   const target = Number(goal.target_value)
   const onTrack = wtd != null && (higher ? wtd >= target : wtd <= target)
   const improving = latest != null && prev != null ? (higher ? latest > prev : latest < prev) : null
@@ -158,6 +171,11 @@ function GoalCard({ goal, lib, series, games, prows }) {
           </div>
         </div>
       </div>
+      {isLaners && weakest && (
+        <div style={{ marginTop: 10, fontSize: 12, color: 'var(--text-faint)' }}>
+          Weakest link: <span style={{ color: '#e5534b', fontWeight: 700 }}>{weakest.player}</span> at {fmt(weakest.value, unit)}
+        </div>
+      )}
     </div>
   )
 }
