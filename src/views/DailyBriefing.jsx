@@ -110,6 +110,7 @@ function computeGoal(goal, lib, seriesById, games, prows) {
   const latest = withVals.length ? withVals[withVals.length - 1].value : null
   const prev = withVals.length > 1 ? withVals[withVals.length - 2].value : null
   const latestDate = withVals.length ? withVals[withVals.length - 1].date : null
+  const prevDate = withVals.length > 1 ? withVals[withVals.length - 2].date : null
   const delta = latest != null && prev != null ? latest - prev : null
 
   const winGames = enriched.filter((g) => dates.includes(seriesById[g.grid_series_id].series_date))
@@ -120,9 +121,17 @@ function computeGoal(goal, lib, seriesById, games, prows) {
   const target = goal.target_value != null ? Number(goal.target_value) : null
   const onTrack = wtd != null && target != null && (higher ? wtd >= target : wtd <= target)
   const improving = latest != null && prev != null ? (higher ? latest > prev : latest < prev) : null
+  // did today close the gap vs yesterday? up / down / flat / null (no comparison yet)
+  let dayState = null
+  if (latest != null && prev != null) {
+    dayState = Math.abs(latest - prev) < 1e-9 ? 'flat' : (higher ? latest > prev : latest < prev) ? 'up' : 'down'
+  }
+  // distance still to go to target from the latest day (negative = already met)
+  const remaining = target != null && latest != null ? (higher ? target - latest : latest - target) : null
+  const met = remaining != null && remaining <= 0
   const prob = goalProbability(baseline, wtd, target, latest, prev, higher)
 
-  return { meta, unit, higher, points, latest, prev, latestDate, delta, wtd, baseline, target, onTrack, improving, prob }
+  return { meta, unit, higher, points, latest, prev, latestDate, prevDate, delta, wtd, baseline, target, onTrack, improving, dayState, remaining, met, prob }
 }
 
 // ---------------------------------------------------------------------------
@@ -191,42 +200,89 @@ function ProbChip({ prob }) {
   )
 }
 
+const VERDICT = {
+  up: { t: 'Improved today', col: '#3aa76d', a: '▲' },
+  down: { t: 'Slipped today', col: '#e0524a', a: '▼' },
+  flat: { t: 'Held flat', col: '#e0a940', a: '—' },
+  none: { t: 'No new day yet', col: '#8a91a0', a: '·' },
+}
+
+function VerdictPill({ dayState }) {
+  const v = VERDICT[dayState || 'none']
+  return (
+    <span style={{ fontSize: 12, fontWeight: 800, padding: '4px 11px', borderRadius: 20, background: `${v.col}22`, color: v.col, whiteSpace: 'nowrap' }}>
+      {v.a} {v.t}
+    </span>
+  )
+}
+
+// count how many goals improved / slipped / held today
+function rollup(list) {
+  const withDay = list.filter((x) => x.c.dayState)
+  return {
+    up: withDay.filter((x) => x.c.dayState === 'up').length,
+    down: withDay.filter((x) => x.c.dayState === 'down').length,
+    flat: withDay.filter((x) => x.c.dayState === 'flat').length,
+    total: withDay.length,
+  }
+}
+
+// "X of Y improved today" strip — the accountability read at a glance
+function ReportCard({ r, size = 'lg' }) {
+  if (!r.total) return <span style={{ fontSize: 12, color: 'var(--text-faint)' }}>no new day to compare yet</span>
+  const good = r.up >= Math.ceil(r.total / 2)
+  const col = good ? '#3aa76d' : '#e0a940'
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: size === 'lg' ? 13 : 12 }}>
+      <span style={{ fontWeight: 800, color: col, fontSize: size === 'lg' ? 15 : 13 }}>{r.up} of {r.total} improved today</span>
+      <span style={{ color: 'var(--text-faint)' }}>
+        {r.down > 0 && <span style={{ color: '#e0524a' }}>▼{r.down} </span>}
+        {r.flat > 0 && <span style={{ color: '#e0a940' }}>—{r.flat}</span>}
+      </span>
+    </span>
+  )
+}
+
 function GoalRow({ goal, c, compact }) {
-  const trendColor = c.improving == null ? 'var(--text-faint)' : c.improving ? '#3aa76d' : '#e0524a'
-  const trendArrow = c.improving == null ? '' : c.improving ? '▲' : '▼'
+  const dc = c.dayState === 'up' ? '#3aa76d' : c.dayState === 'down' ? '#e0524a' : c.dayState === 'flat' ? '#e0a940' : 'var(--text-faint)'
+  const gapMag = (v, unit) => unit === '%' ? `${Math.round(v)}%` : unit === 'gold' ? `${Math.round(v)}` : (unit === 'CS' || unit === 'CS/min') ? v.toFixed(1) : `${Math.round(v * 10) / 10}`
+  const gapText = c.remaining == null ? '—' : c.met ? 'target met ✓' : `${gapMag(c.remaining, c.unit)} to go`
   return (
     <div style={{ padding: '12px 0', borderTop: '1px solid var(--border, #2b2b33)' }}>
+      {/* headline: the accountability call */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
         <div style={{ fontWeight: 600, fontSize: compact ? 13 : 14 }}>
           {c.meta.label || goal.metric_key}
           <span style={{ color: 'var(--text-faint)', fontWeight: 400, marginLeft: 8, fontSize: 12 }}>{goal.intent}</span>
         </div>
-        <ProbChip prob={c.prob} />
+        <VerdictPill dayState={c.dayState} />
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 18, flexWrap: 'wrap', marginTop: 4 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 16, flexWrap: 'wrap', marginTop: 6 }}>
         <div>
-          <div style={{ fontSize: 10, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Now{c.latestDate ? ` · ${c.latestDate.slice(5)}` : ''}</div>
-          <div style={{ fontSize: 24, fontWeight: 700, lineHeight: 1.1 }}>{fmt(c.wtd, c.unit)}</div>
+          <div style={{ fontSize: 10, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Today{c.latestDate ? ` · ${c.latestDate.slice(5)}` : ''}</div>
+          <div style={{ fontSize: 24, fontWeight: 800, lineHeight: 1.1, color: dc }}>{fmt(c.latest, c.unit)}</div>
         </div>
         <div>
-          <div style={{ fontSize: 10, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Day change</div>
-          <div style={{ fontSize: 16, fontWeight: 700, color: trendColor }}>
-            {c.delta == null ? <span style={{ color: 'var(--text-faint)' }}>—</span> : <>{trendArrow} {fmtDelta(c.delta, c.unit)}</>}
+          <div style={{ fontSize: 10, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '.04em' }}>vs yesterday{c.prevDate ? ` · ${c.prevDate.slice(5)}` : ''}</div>
+          <div style={{ fontSize: 16, fontWeight: 700 }}>
+            <span style={{ color: 'var(--text-faint)' }}>{fmt(c.prev, c.unit)}</span>
+            {c.delta != null && <span style={{ color: dc, marginLeft: 8 }}>{c.dayState === 'up' ? '▲' : c.dayState === 'down' ? '▼' : ''}{fmtDelta(c.delta, c.unit)}</span>}
           </div>
         </div>
         <div>
-          <div style={{ fontSize: 10, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Target</div>
-          <div style={{ fontSize: 16, fontWeight: 700, color: '#c9a227' }}>{fmt(c.target, c.unit)}</div>
+          <div style={{ fontSize: 10, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Gap to target</div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: c.met ? '#3aa76d' : '#c9a227' }}>{gapText}</div>
         </div>
         <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
           <Sparkline points={c.points} target={c.target} higher={c.higher} />
         </div>
       </div>
-      <StandBar baseline={c.baseline} current={c.wtd} target={c.target} higher={c.higher} onTrack={c.onTrack} />
-      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--text-faint)' }}>
+
+      <StandBar baseline={c.baseline} current={c.latest} target={c.target} higher={c.higher} onTrack={c.met} />
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 10, color: 'var(--text-faint)' }}>
         <span>baseline {fmt(c.baseline, c.unit)}</span>
-        <span>target {fmt(c.target, c.unit)}</span>
+        <span>week-to-date {fmt(c.wtd, c.unit)} · target {fmt(c.target, c.unit)}</span>
       </div>
     </div>
   )
@@ -278,20 +334,29 @@ const WIN_CONDS = [
 // Main
 // ---------------------------------------------------------------------------
 export default function DailyBriefing() {
-  const { data: goals, loading: goalsLoading } = useSupabaseQuery(() => supabase.from('prep_goals').select('*').eq('active', true), [])
-  const { data: library } = useSupabaseQuery(() => supabase.from('goal_library').select('*'), [])
-  const { data: seriesRows } = useSupabaseQuery(() => supabase.from('grid_series').select('grid_series_id, series_date, series_type, opponent_name'), [])
-  const { data: gameRows } = useSupabaseQuery(
+  const { data: goals, loading: goalsLoading, refetch: refetchGoals } = useSupabaseQuery(() => supabase.from('prep_goals').select('*').eq('active', true), [])
+  const { data: library, refetch: refetchLib } = useSupabaseQuery(() => supabase.from('goal_library').select('*'), [])
+  const { data: seriesRows, refetch: refetchSeries } = useSupabaseQuery(() => supabase.from('grid_series').select('grid_series_id, series_date, series_type, opponent_name'), [])
+  const { data: gameRows, refetch: refetchGames } = useSupabaseQuery(
     () => fetchAllRows(() => supabase.from('grid_games').select(
       'id, grid_series_id, sentinels_won, riot_enriched, game_duration_s, gold_diff_15, cs_diff_15, first_blood_sentinels, first_tower_sentinels, sentinels_dragons, opponent_dragons, sentinels_heralds, sentinels_grubs, positive_plays, give_backs, snowballs'
     )), []
   )
-  const { data: playerRows } = useSupabaseQuery(
+  const { data: playerRows, refetch: refetchPlayers } = useSupabaseQuery(
     () => fetchAllRows(() => supabase.from('grid_player_games').select(
       'game_id, player, cs_diff_15, gold_diff_15, cs_per_min, kill_participation, champ_damage_share, champ_damage_per_min, vision_score'
     ).eq('is_sentinels', true)), []
   )
   const { data: contentRows, refetch: refetchContent } = useSupabaseQuery(() => supabase.from('briefing_content').select('key, value'), [])
+
+  // "Updated at" stamp + manual refresh. The page also refetches automatically
+  // every time you open the tab, so running Daily Sync then coming here shows
+  // the day's fresh data; Refresh is for when it's left open across a sync.
+  const [updatedAt, setUpdatedAt] = useState(null)
+  useEffect(() => { if (gameRows) setUpdatedAt(new Date()) }, [gameRows])
+  const refreshAll = useCallback(() => {
+    refetchGoals(); refetchLib(); refetchSeries(); refetchGames(); refetchPlayers(); refetchContent()
+  }, [refetchGoals, refetchLib, refetchSeries, refetchGames, refetchPlayers, refetchContent])
 
   const lib = useMemo(() => Object.fromEntries((library || []).map((l) => [l.metric_key, l])), [library])
   const seriesById = useMemo(() => Object.fromEntries((seriesRows || []).map((s) => [s.grid_series_id, s])), [seriesRows])
@@ -386,13 +451,22 @@ export default function DailyBriefing() {
           <div className="empty-state">No prep cycle set yet — add this week&apos;s goals and the briefing fills in.</div>
         ) : (
           <>
-            <div style={{ fontSize: 12, letterSpacing: '.14em', color: '#c9a227', textTransform: 'uppercase', fontWeight: 700 }}>Daily Briefing</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+              <div style={{ fontSize: 12, letterSpacing: '.14em', color: '#c9a227', textTransform: 'uppercase', fontWeight: 700 }}>Daily Briefing</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                {updatedAt && <span style={{ fontSize: 11, color: 'var(--text-faint)' }}>updated {updatedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>}
+                <button type="button" onClick={refreshAll} style={{ fontSize: 12, color: 'var(--text)', background: 'transparent', border: '1px solid var(--border,#2b2b33)', borderRadius: 8, padding: '4px 12px', cursor: 'pointer' }}>
+                  ↻ Refresh
+                </button>
+              </div>
+            </div>
             <div style={{ fontSize: 30, fontWeight: 800, margin: '4px 0 2px' }}>
               {daysUntil != null && daysUntil >= 0
                 ? <>In <span style={{ color: '#e01e37' }}>{daysUntil}</span> {daysUntil === 1 ? 'day' : 'days'} we play <span style={{ color: '#fff' }}>{cycleOpp}</span></>
                 : <>Next official: <span style={{ color: '#fff' }}>{cycleOpp}</span></>}
             </div>
             {cycleDate && <div style={{ fontSize: 13, color: 'var(--text-faint)' }}>Official — {cycleDate}</div>}
+            <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 2 }}>Updates from the day&apos;s scrims each time you run Daily Sync.</div>
 
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 16 }}>
               {kpi(`Record vs ${cycleOpp}`, vsOpp.totN ? `${vsOpp.totW}–${vsOpp.totL}` : '—', `${vsOpp.totN} completed games`, undefined, `Completed games only — remakes and games under ${Math.round(MIN_REAL_GAME_S / 60)} min are excluded, so this matches your real head-to-head.`)}
@@ -446,10 +520,13 @@ export default function DailyBriefing() {
         <>
           {/* ---------------- TEAM ---------------- */}
           <div className="panel">
-            <h2 style={{ marginBottom: 2 }}>Where we stand — as a team</h2>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              <h2 style={{ marginBottom: 2 }}>Where we stand — as a team</h2>
+              <ReportCard r={rollup(teamComputed)} />
+            </div>
             <p className="panel-caption" style={{ marginTop: 0 }}>
-              Each bar runs baseline → target; the dot is where this week&apos;s scrims currently sit. Green means at/beyond target.
-              The % is a blended read of how far we&apos;ve closed the gap and which way the last day moved — a direction, not a guarantee.
+              The call on each goal is today vs yesterday: did the last scrim day move the number toward target? The bar runs baseline → target with today&apos;s dot;
+              week-to-date and the readiness gauge up top give the fuller picture, but accountability is the daily line.
             </p>
             {teamComputed.length === 0 ? <div className="empty-state">No team goals active.</div> : (
               <div>{teamComputed.map(({ goal, c }) => <GoalRow key={goal.id} goal={goal} c={c} />)}</div>
@@ -469,9 +546,12 @@ export default function DailyBriefing() {
                 const pProb = probs.length ? Math.round(probs.reduce((a, b) => a + b, 0) / probs.length) : null
                 return (
                   <div key={player} style={{ border: '1px solid var(--border, #2b2b33)', borderRadius: 12, padding: '14px 16px', background: 'var(--panel-2, #14161c)' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
                       <div style={{ fontSize: 18, fontWeight: 800, color: '#c9a227' }}>{player}</div>
-                      <ProbChip prob={pProb} />
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <ReportCard r={rollup(pg)} size="sm" />
+                        <ProbChip prob={pProb} />
+                      </div>
                     </div>
                     {pg.map(({ goal, c }) => <GoalRow key={goal.id} goal={goal} c={c} compact />)}
                     <NoteBox value={content[`note:${player}`]} onSave={(v) => saveContent(`note:${player}`, v)} placeholder={`Reminder for ${player}…`} />
