@@ -10,6 +10,36 @@ import InfoTip from '../components/InfoTip.jsx'
 const MIN_REAL_GAME_S = 900
 const READINESS_HELP = 'A 0–100 readiness index across all active goals — not a match-win prediction. For each goal it blends how much of the baseline→target gap is currently closed with whether the last scrim day moved toward or away from target, then averages across every goal. Read it as prep direction-of-travel: low early in the week, climbing as the numbers move toward target.'
 
+// Plain-English, LoL-accurate explanation of what each metric actually is and
+// where the number comes from — so a coach can explain it to the players.
+const METRIC_HELP = {
+  team_gold_diff_15: "Gold difference at 15:00 — our whole team's gold minus the enemy's at the 15-minute mark, averaged across the day's games. Pulled from the Riot match timeline. Positive means we head into the mid game with a real lead.",
+  team_cs_diff_15: "Team CS (creep-score) difference vs the enemy at 15:00, averaged across the day's games. From the Riot timeline.",
+  first_tower_rate: "Share of the day's games where we take the first tower. First tower is gold plus map control. From Riot objective data.",
+  dragon_control_rate: "Share of games where we finish with more dragons than the enemy. Dragons stack permanent buffs, so out-dragoning them is a lasting lead. From Riot objective data.",
+  first_dragon_rate: "Share of games where we out-take the enemy on dragons.",
+  grub_majority_rate: "Share of games where we take at least 4 of the 6 Void Grubs. Grubs speed up our tower kills. From Riot objective data.",
+  laners_cs_diff_15: "Average CS (creep-score) difference at 15:00 across our four laners — everyone except Huhi, the support — each measured against their direct lane opponent. Positive means our lanes are out-farming theirs. From the Riot timeline.",
+  laners_damage_per_min: "Average champion damage per minute across our four laners over the full game — turning farm and kills into actual damage.",
+  team_give_back_rate: "Of our kills, objectives and tower takes, the share where we hand a kill straight back within 90 seconds. LOWER is better — it measures giving leads away. Built from the timeline event stream.",
+  team_snowball_rate: "Of our kills, objectives and tower takes, the share we follow up with ANOTHER positive play within 90 seconds. HIGHER is better — it measures pressing an advantage. From the timeline event stream.",
+  player_cs_diff_15: "This player's CS (creep-score) lead over their direct lane opponent at 15:00, averaged across the day. From the Riot timeline.",
+  player_gold_diff_15: "This player's gold lead over their lane opponent at 15:00, averaged across the day.",
+  player_kp: "Kill participation — the share of the team's kills this player landed a kill or assist on. Measures how involved they are across the map.",
+  player_cs_per_min: "Creep score per minute — farm rate over the full game.",
+  player_damage_share: "Share of the team's total champion damage this player dealt.",
+  player_damage_per_min: "Champion damage per minute over the full game.",
+  player_vision_score: "Riot's vision score — wards placed, wards cleared, and time spent giving the team vision.",
+}
+const COL_HELP = {
+  today: "The value from the most recent scrim day (the date shown), averaged over that day's completed games (15+ minutes).",
+  yesterday: "The same number from the previous scrim day, with the change since. ▲ means it moved toward the target, ▼ means away from it.",
+  week: "All of this prep week's scrims combined into one number, plus how far it sits above or below the baseline we started from.",
+  gap: "How far today's number still has to move to reach this week's target.",
+  baseline: "Where we started — our average for this metric over the last 5 games against the upcoming opponent.",
+  target: "The goal for this prep week, set toward the level we hit in our wins.",
+}
+
 // ---------------------------------------------------------------------------
 // Metric helpers — kept in step with GoalsTracker so both pages read the same.
 // ---------------------------------------------------------------------------
@@ -220,10 +250,10 @@ const WEEK_VERDICT = {
   none: { t: 'week —', col: '#8a91a0', a: '·' },
 }
 
-function VerdictPill({ state, map, prefix }) {
+function VerdictPill({ state, map, prefix, title }) {
   const v = map[state || 'none']
   return (
-    <span style={{ fontSize: 11.5, fontWeight: 800, padding: '4px 10px', borderRadius: 20, background: `${v.col}22`, color: v.col, whiteSpace: 'nowrap' }}>
+    <span title={title} style={{ fontSize: 11.5, fontWeight: 800, padding: '4px 10px', borderRadius: 20, background: `${v.col}22`, color: v.col, whiteSpace: 'nowrap', cursor: title ? 'help' : 'default' }}>
       {prefix ? <span style={{ opacity: 0.6, fontWeight: 700, marginRight: 4 }}>{prefix}</span> : null}{v.a} {v.t}
     </span>
   )
@@ -267,47 +297,56 @@ function ReportCard({ r, size = 'lg' }) {
   )
 }
 
-function GoalRow({ goal, c, compact }) {
+const LBL_HELP = { fontSize: 10, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '.04em', cursor: 'help' }
+
+function GoalRow({ goal, c, compact, opponent }) {
   const stateColor = (s) => s === 'up' ? '#3aa76d' : s === 'down' ? '#e0524a' : s === 'flat' ? '#e0a940' : 'var(--text-faint)'
   const dc = stateColor(c.dayState)
   const wc = stateColor(c.weekState)
   const gapMag = (v, unit) => unit === '%' ? `${Math.round(v)}%` : unit === 'gold' ? `${Math.round(v)}` : (unit === 'CS' || unit === 'CS/min') ? v.toFixed(1) : `${Math.round(v * 10) / 10}`
   const gapText = c.remaining == null ? '—' : c.met ? 'target met ✓' : `${gapMag(c.remaining, c.unit)} to go`
+  // the master explainer for this goal — what the number is, where it comes
+  // from, how the baseline/target were set, and how the two verdicts are read
+  const opp = opponent || 'the opponent'
+  const baseTxt = c.baseline != null ? ` Baseline (${fmt(c.baseline, c.unit)}) is our average over the last 5 games vs ${opp} — the starting point.` : ''
+  const tgtTxt = c.target != null ? ` Target (${fmt(c.target, c.unit)}) is this week's goal, set ${c.higher ? 'above' : 'below'} the baseline toward the level we hit in our wins.` : ''
+  const help = `${METRIC_HELP[goal.metric_key] || c.meta.description || c.meta.label || goal.metric_key}${baseTxt}${tgtTxt} “Improved today” compares the latest scrim day to the day before; “Up this week” compares all this week's scrims combined against the baseline.`
   return (
     <div style={{ padding: '12px 0', borderTop: '1px solid var(--border, #2b2b33)' }}>
       {/* headline: the accountability call — day-by-day and running week */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
         <div style={{ fontWeight: 600, fontSize: compact ? 13 : 14 }}>
           {c.meta.label || goal.metric_key}
+          <InfoTip text={help} />
           <span style={{ color: 'var(--text-faint)', fontWeight: 400, marginLeft: 8, fontSize: 12 }}>{goal.intent}</span>
         </div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-          <VerdictPill state={c.dayState} map={DAY_VERDICT} />
-          <VerdictPill state={c.weekState} map={WEEK_VERDICT} />
+          <VerdictPill state={c.dayState} map={DAY_VERDICT} title="Did the number improve on the latest scrim day versus the day before?" />
+          <VerdictPill state={c.weekState} map={WEEK_VERDICT} title="Is the combined week-to-date number above the baseline we started the week from?" />
         </div>
       </div>
 
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 16, flexWrap: 'wrap', marginTop: 6 }}>
         <div>
-          <div style={{ fontSize: 10, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Today{c.latestDate ? ` · ${c.latestDate.slice(5)}` : ''}</div>
+          <div style={LBL_HELP} title={COL_HELP.today}>Today{c.latestDate ? ` · ${c.latestDate.slice(5)}` : ''}</div>
           <div style={{ fontSize: 24, fontWeight: 800, lineHeight: 1.1, color: dc }}>{fmt(c.latest, c.unit)}</div>
         </div>
         <div>
-          <div style={{ fontSize: 10, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '.04em' }}>vs yesterday{c.prevDate ? ` · ${c.prevDate.slice(5)}` : ''}</div>
+          <div style={LBL_HELP} title={COL_HELP.yesterday}>vs yesterday{c.prevDate ? ` · ${c.prevDate.slice(5)}` : ''}</div>
           <div style={{ fontSize: 16, fontWeight: 700 }}>
             <span style={{ color: 'var(--text-faint)' }}>{fmt(c.prev, c.unit)}</span>
             {c.delta != null && <span style={{ color: dc, marginLeft: 8 }}>{c.dayState === 'up' ? '▲' : c.dayState === 'down' ? '▼' : ''}{fmtDelta(c.delta, c.unit)}</span>}
           </div>
         </div>
         <div>
-          <div style={{ fontSize: 10, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Week so far</div>
+          <div style={LBL_HELP} title={COL_HELP.week}>Week so far</div>
           <div style={{ fontSize: 16, fontWeight: 800, color: wc }}>
             {fmt(c.wtd, c.unit)}
             {c.weekDelta != null && <span style={{ fontSize: 12, fontWeight: 700, marginLeft: 6 }}>{c.weekState === 'up' ? '▲' : c.weekState === 'down' ? '▼' : '—'}{gapMag(Math.abs(c.weekDelta), c.unit)} vs base</span>}
           </div>
         </div>
         <div>
-          <div style={{ fontSize: 10, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Gap to target</div>
+          <div style={LBL_HELP} title={COL_HELP.gap}>Gap to target</div>
           <div style={{ fontSize: 16, fontWeight: 700, color: c.met ? '#3aa76d' : '#c9a227' }}>{gapText}</div>
         </div>
         <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
@@ -317,8 +356,8 @@ function GoalRow({ goal, c, compact }) {
 
       <StandBar baseline={c.baseline} current={c.latest} target={c.target} higher={c.higher} onTrack={c.met} />
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 10, color: 'var(--text-faint)' }}>
-        <span>baseline {fmt(c.baseline, c.unit)}</span>
-        <span>target {fmt(c.target, c.unit)}</span>
+        <span style={{ cursor: 'help' }} title={COL_HELP.baseline}>baseline {fmt(c.baseline, c.unit)}</span>
+        <span style={{ cursor: 'help' }} title={COL_HELP.target}>target {fmt(c.target, c.unit)}</span>
       </div>
     </div>
   )
@@ -565,7 +604,7 @@ export default function DailyBriefing() {
               scrims combined vs the baseline we started from). The bar runs baseline → target with today&apos;s dot; the pills give the daily and running verdicts.
             </p>
             {teamComputed.length === 0 ? <div className="empty-state">No team goals active.</div> : (
-              <div>{teamComputed.map(({ goal, c }) => <GoalRow key={goal.id} goal={goal} c={c} />)}</div>
+              <div>{teamComputed.map(({ goal, c }) => <GoalRow key={goal.id} goal={goal} c={c} opponent={cycleOpp} />)}</div>
             )}
             <NoteBox value={content['note:__team__']} onSave={(v) => saveContent('note:__team__', v)} placeholder="Coach note to the team for today — focus, reminder, message for the room…" />
           </div>
@@ -589,7 +628,7 @@ export default function DailyBriefing() {
                         <ProbChip prob={pProb} />
                       </div>
                     </div>
-                    {pg.map(({ goal, c }) => <GoalRow key={goal.id} goal={goal} c={c} compact />)}
+                    {pg.map(({ goal, c }) => <GoalRow key={goal.id} goal={goal} c={c} compact opponent={cycleOpp} />)}
                     <NoteBox value={content[`note:${player}`]} onSave={(v) => saveContent(`note:${player}`, v)} placeholder={`Reminder for ${player}…`} />
                   </div>
                 )
