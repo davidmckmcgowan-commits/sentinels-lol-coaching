@@ -1,0 +1,472 @@
+import { useMemo, useState, useEffect, useCallback } from 'react'
+import { supabase } from '../lib/supabaseClient.js'
+import { useSupabaseQuery, fetchAllRows } from '../lib/useSupabaseQuery.js'
+import { canonicalOpponentName } from '../lib/constants.js'
+
+// ---------------------------------------------------------------------------
+// Metric helpers — kept in step with GoalsTracker so both pages read the same.
+// ---------------------------------------------------------------------------
+const WINDOW_DAYS = 12
+const ROSTER = ['Impact', 'HamBak', 'DARKWINGS', 'Rahel', 'Huhi']
+const LANERS = ['Impact', 'HamBak', 'DARKWINGS', 'Rahel']
+
+const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x))
+const clamp01 = (x) => clamp(x, 0, 1)
+const avg = (arr, f) => { const v = arr.map(f).filter((x) => x != null); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null }
+const rate = (arr, f) => { const v = arr.map(f).filter((x) => x != null); return v.length ? (v.filter(Boolean).length / v.length) * 100 : null }
+
+function metricValue(key, games, prows) {
+  switch (key) {
+    case 'team_gold_diff_15': return avg(games, (g) => g.gold_diff_15)
+    case 'team_cs_diff_15': return avg(games, (g) => g.cs_diff_15)
+    case 'first_tower_rate': return rate(games, (g) => g.first_tower_sentinels)
+    case 'first_dragon_rate':
+    case 'dragon_control_rate': return rate(games, (g) => (g.sentinels_dragons != null && g.opponent_dragons != null ? g.sentinels_dragons > g.opponent_dragons : null))
+    case 'grub_majority_rate': return rate(games, (g) => (g.sentinels_grubs != null ? g.sentinels_grubs >= 4 : null))
+    case 'player_cs_diff_15': return avg(prows, (p) => p.cs_diff_15)
+    case 'player_gold_diff_15': return avg(prows, (p) => p.gold_diff_15)
+    case 'player_kp': return avg(prows, (p) => p.kill_participation)
+    case 'player_cs_per_min': return avg(prows, (p) => p.cs_per_min)
+    case 'player_damage_share': return avg(prows, (p) => p.champ_damage_share)
+    case 'player_damage_per_min': return avg(prows, (p) => p.champ_damage_per_min)
+    case 'player_vision_score': return avg(prows, (p) => p.vision_score)
+    case 'laners_cs_diff_15': return avg(prows, (p) => p.cs_diff_15)
+    case 'laners_damage_per_min': return avg(prows, (p) => p.champ_damage_per_min)
+    case 'team_give_back_rate': {
+      const pp = games.reduce((a, g) => a + (g.positive_plays || 0), 0)
+      const gb = games.reduce((a, g) => a + (g.give_backs || 0), 0)
+      return pp ? (gb / pp) * 100 : null
+    }
+    case 'team_snowball_rate': {
+      const pp = games.reduce((a, g) => a + (g.positive_plays || 0), 0)
+      const sn = games.reduce((a, g) => a + (g.snowballs || 0), 0)
+      return pp ? (sn / pp) * 100 : null
+    }
+    default: return null
+  }
+}
+
+const fmt = (v, unit) => {
+  if (v == null) return '—'
+  if (unit === '%') return `${Math.round(v)}%`
+  if (unit === 'gold') return (v >= 0 ? '+' : '') + Math.round(v)
+  if (unit === 'CS') return (v >= 0 ? '+' : '') + v.toFixed(1)
+  if (unit === 'CS/min') return v.toFixed(1)
+  return Math.round(v * 10) / 10
+}
+const fmtDelta = (d, unit) => {
+  if (d == null) return null
+  const s = d > 0 ? '+' : ''
+  if (unit === '%') return `${s}${Math.round(d)}%`
+  if (unit === 'gold') return `${s}${Math.round(d)}`
+  if (unit === 'CS' || unit === 'CS/min') return `${s}${d.toFixed(1)}`
+  return `${s}${Math.round(d * 10) / 10}`
+}
+
+// Blended probability: 70% how much of baseline->target is closed, 15% floor,
+// 15% recent day-over-day trend direction. A directional read, not a forecast.
+function goalProbability(baseline, current, target, latest, prev, higher) {
+  if (baseline == null || current == null || target == null || target === baseline) return null
+  const progress = clamp01((current - baseline) / (target - baseline))
+  let trendScore = 0.5
+  if (latest != null && prev != null) {
+    const toward = higher ? latest - prev : prev - latest
+    trendScore = clamp(0.5 + (toward / Math.abs(target - baseline)) * 2, 0, 1)
+  }
+  const p = 0.15 + 0.7 * progress + 0.15 * trendScore
+  return Math.round(clamp(p, 0.02, 0.98) * 100)
+}
+
+const probColor = (p) => (p == null ? '#8a91a0' : p >= 66 ? '#3aa76d' : p >= 40 ? '#e0a940' : '#e0524a')
+
+// ---------------------------------------------------------------------------
+// Per-goal computation over the recent scrim window
+// ---------------------------------------------------------------------------
+function computeGoal(goal, lib, seriesById, games, prows) {
+  const meta = lib[goal.metric_key] || {}
+  const unit = meta.unit
+  const higher = meta.higher_is_better !== false
+  const isLaners = (goal.metric_key || '').startsWith('laners_')
+  const playersFor = (idSet) => isLaners
+    ? prows.filter((p) => p.player !== 'Huhi' && idSet.has(p.game_id))
+    : goal.scope === 'player' ? prows.filter((p) => p.player === goal.player && idSet.has(p.game_id)) : []
+
+  const enriched = games.filter((g) => { const s = seriesById[g.grid_series_id]; return s && s.series_type === 'SCRIM' && g.riot_enriched })
+  const dates = [...new Set(enriched.map((g) => seriesById[g.grid_series_id].series_date))].sort().slice(-WINDOW_DAYS)
+
+  const points = dates.map((date) => {
+    const dg = enriched.filter((g) => seriesById[g.grid_series_id].series_date === date)
+    const ids = new Set(dg.map((g) => g.id))
+    return { date, value: metricValue(goal.metric_key, dg, playersFor(ids)) }
+  })
+  const withVals = points.filter((p) => p.value != null)
+  const latest = withVals.length ? withVals[withVals.length - 1].value : null
+  const prev = withVals.length > 1 ? withVals[withVals.length - 2].value : null
+  const latestDate = withVals.length ? withVals[withVals.length - 1].date : null
+  const delta = latest != null && prev != null ? latest - prev : null
+
+  const winGames = enriched.filter((g) => dates.includes(seriesById[g.grid_series_id].series_date))
+  const winIds = new Set(winGames.map((g) => g.id))
+  const wtd = metricValue(goal.metric_key, winGames, playersFor(winIds))
+
+  const baseline = goal.baseline_value != null ? Number(goal.baseline_value) : null
+  const target = goal.target_value != null ? Number(goal.target_value) : null
+  const onTrack = wtd != null && target != null && (higher ? wtd >= target : wtd <= target)
+  const improving = latest != null && prev != null ? (higher ? latest > prev : latest < prev) : null
+  const prob = goalProbability(baseline, wtd, target, latest, prev, higher)
+
+  return { meta, unit, higher, points, latest, prev, latestDate, delta, wtd, baseline, target, onTrack, improving, prob }
+}
+
+// ---------------------------------------------------------------------------
+// Small presentational pieces
+// ---------------------------------------------------------------------------
+function Sparkline({ points, target, higher }) {
+  const vals = points.map((p) => p.value).filter((x) => x != null)
+  if (vals.length < 2) return null
+  const all = target != null ? [...vals, target] : vals
+  const min = Math.min(...all), max = Math.max(...all)
+  const span = max - min || 1
+  const W = 130, H = 30
+  const step = W / (points.length - 1)
+  const y = (v) => H - ((v - min) / span) * (H - 6) - 3
+  const path = points.map((p, i) => (p.value == null ? null : `${i === 0 ? 'M' : 'L'}${(i * step).toFixed(1)},${y(p.value).toFixed(1)}`)).filter(Boolean).join(' ')
+  return (
+    <svg width={W} height={H} style={{ overflow: 'visible' }}>
+      {target != null && <line x1="0" y1={y(target)} x2={W} y2={y(target)} stroke="#c9a227" strokeWidth="1" strokeDasharray="3 3" opacity="0.7" />}
+      <path d={path} fill="none" stroke="#4c8bf5" strokeWidth="2" />
+      {points.map((p, i) => p.value != null && (
+        <circle key={i} cx={i * step} cy={y(p.value)} r={i === points.length - 1 ? 3.2 : 1.8} fill="#4c8bf5" />
+      ))}
+    </svg>
+  )
+}
+
+// horizontal track: baseline ---- current ---- target
+function StandBar({ baseline, current, target, higher, onTrack }) {
+  if (baseline == null || target == null) return null
+  const lo = Math.min(baseline, target), hi = Math.max(baseline, target)
+  const pad = (hi - lo) * 0.15 || 1
+  const min = lo - pad, max = hi + pad
+  const pos = (v) => `${clamp(((v - min) / (max - min)) * 100, 0, 100)}%`
+  const fillColor = onTrack ? '#3aa76d' : '#e0a940'
+  const curPct = current != null ? clamp(((current - min) / (max - min)) * 100, 0, 100) : null
+  const basePct = clamp(((baseline - min) / (max - min)) * 100, 0, 100)
+  const tgtPct = clamp(((target - min) / (max - min)) * 100, 0, 100)
+  return (
+    <div style={{ position: 'relative', height: 26, margin: '10px 0 4px' }}>
+      <div style={{ position: 'absolute', top: 11, left: 0, right: 0, height: 4, borderRadius: 3, background: '#2a2f3a' }} />
+      {curPct != null && (
+        <div style={{ position: 'absolute', top: 11, left: `${Math.min(basePct, curPct)}%`, width: `${Math.abs(curPct - basePct)}%`, height: 4, borderRadius: 3, background: fillColor }} />
+      )}
+      {/* baseline tick */}
+      <div style={{ position: 'absolute', top: 6, left: pos(baseline), width: 2, height: 14, background: '#676f7d', transform: 'translateX(-1px)' }} title="baseline" />
+      {/* target tick */}
+      <div style={{ position: 'absolute', top: 4, left: pos(target), width: 2, height: 18, background: '#c9a227', transform: 'translateX(-1px)' }} title="target" />
+      {/* current marker */}
+      {curPct != null && (
+        <div style={{ position: 'absolute', top: 7, left: `${curPct}%`, width: 12, height: 12, borderRadius: '50%', background: fillColor, border: '2px solid #10131a', transform: 'translateX(-6px)' }} title="current" />
+      )}
+    </div>
+  )
+}
+
+function ProbChip({ prob }) {
+  if (prob == null) return <span style={{ fontSize: 11, color: 'var(--text-faint)' }}>—</span>
+  const c = probColor(prob)
+  return (
+    <span style={{ fontSize: 12, fontWeight: 700, padding: '3px 9px', borderRadius: 20, background: `${c}22`, color: c, whiteSpace: 'nowrap' }}>
+      {prob}% to hit target
+    </span>
+  )
+}
+
+function GoalRow({ goal, c, compact }) {
+  const trendColor = c.improving == null ? 'var(--text-faint)' : c.improving ? '#3aa76d' : '#e0524a'
+  const trendArrow = c.improving == null ? '' : c.improving ? '▲' : '▼'
+  return (
+    <div style={{ padding: '12px 0', borderTop: '1px solid var(--border, #2b2b33)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
+        <div style={{ fontWeight: 600, fontSize: compact ? 13 : 14 }}>
+          {c.meta.label || goal.metric_key}
+          <span style={{ color: 'var(--text-faint)', fontWeight: 400, marginLeft: 8, fontSize: 12 }}>{goal.intent}</span>
+        </div>
+        <ProbChip prob={c.prob} />
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 18, flexWrap: 'wrap', marginTop: 4 }}>
+        <div>
+          <div style={{ fontSize: 10, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Now{c.latestDate ? ` · ${c.latestDate.slice(5)}` : ''}</div>
+          <div style={{ fontSize: 24, fontWeight: 700, lineHeight: 1.1 }}>{fmt(c.wtd, c.unit)}</div>
+        </div>
+        <div>
+          <div style={{ fontSize: 10, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Day change</div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: trendColor }}>
+            {c.delta == null ? <span style={{ color: 'var(--text-faint)' }}>—</span> : <>{trendArrow} {fmtDelta(c.delta, c.unit)}</>}
+          </div>
+        </div>
+        <div>
+          <div style={{ fontSize: 10, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Target</div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: '#c9a227' }}>{fmt(c.target, c.unit)}</div>
+        </div>
+        <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
+          <Sparkline points={c.points} target={c.target} higher={c.higher} />
+        </div>
+      </div>
+      <StandBar baseline={c.baseline} current={c.wtd} target={c.target} higher={c.higher} onTrack={c.onTrack} />
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--text-faint)' }}>
+        <span>baseline {fmt(c.baseline, c.unit)}</span>
+        <span>target {fmt(c.target, c.unit)}</span>
+      </div>
+    </div>
+  )
+}
+
+// editable, auto-saving note
+function NoteBox({ value, onSave, placeholder }) {
+  const [text, setText] = useState(value || '')
+  const [saved, setSaved] = useState(false)
+  useEffect(() => { setText(value || '') }, [value])
+  const dirty = (text || '') !== (value || '')
+  return (
+    <div style={{ marginTop: 8 }}>
+      <textarea
+        value={text}
+        placeholder={placeholder}
+        onChange={(e) => { setText(e.target.value); setSaved(false) }}
+        onBlur={() => { if (dirty) { onSave(text); setSaved(true) } }}
+        rows={2}
+        style={{ width: '100%', resize: 'vertical', background: 'var(--panel-2, #14161c)', color: 'var(--text)', border: '1px solid var(--border, #2b2b33)', borderRadius: 8, padding: '8px 10px', fontSize: 13, fontFamily: 'inherit' }}
+      />
+      <div style={{ height: 14, fontSize: 11, color: dirty ? '#e0a940' : saved ? '#3aa76d' : 'var(--text-faint)' }}>
+        {dirty ? 'unsaved — click away to save' : saved ? 'saved ✓' : ''}
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Win-condition analysis vs the upcoming opponent (top swing factors)
+// ---------------------------------------------------------------------------
+function conditionLift(games, testFn) {
+  const yes = games.filter((g) => testFn(g) === true)
+  const no = games.filter((g) => testFn(g) === false)
+  const wY = yes.length ? (yes.filter((g) => g.sentinels_won).length / yes.length) * 100 : null
+  const wN = no.length ? (no.filter((g) => g.sentinels_won).length / no.length) * 100 : null
+  return wY != null && wN != null ? wY - wN : null
+}
+const WIN_CONDS = [
+  { label: 'First Blood', test: (g) => g.first_blood_sentinels === true ? true : g.first_blood_sentinels === false ? false : null },
+  { label: 'First Tower', test: (g) => g.first_tower_sentinels === true ? true : g.first_tower_sentinels === false ? false : null },
+  { label: 'Gold lead @15', test: (g) => g.gold_diff_15 == null ? null : g.gold_diff_15 > 0 },
+  { label: 'CS lead @15', test: (g) => g.cs_diff_15 == null ? null : g.cs_diff_15 > 0 },
+  { label: 'First Herald', test: (g) => g.sentinels_heralds == null ? null : g.sentinels_heralds > 0 },
+  { label: 'Grub majority (4+)', test: (g) => g.sentinels_grubs == null ? null : g.sentinels_grubs >= 4 },
+]
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+export default function DailyBriefing() {
+  const { data: goals, loading: goalsLoading } = useSupabaseQuery(() => supabase.from('prep_goals').select('*').eq('active', true), [])
+  const { data: library } = useSupabaseQuery(() => supabase.from('goal_library').select('*'), [])
+  const { data: seriesRows } = useSupabaseQuery(() => supabase.from('grid_series').select('grid_series_id, series_date, series_type, opponent_name'), [])
+  const { data: gameRows } = useSupabaseQuery(
+    () => fetchAllRows(() => supabase.from('grid_games').select(
+      'id, grid_series_id, sentinels_won, riot_enriched, gold_diff_15, cs_diff_15, first_blood_sentinels, first_tower_sentinels, sentinels_dragons, opponent_dragons, sentinels_heralds, sentinels_grubs, positive_plays, give_backs, snowballs'
+    )), []
+  )
+  const { data: playerRows } = useSupabaseQuery(
+    () => fetchAllRows(() => supabase.from('grid_player_games').select(
+      'game_id, player, cs_diff_15, gold_diff_15, cs_per_min, kill_participation, champ_damage_share, champ_damage_per_min, vision_score'
+    ).eq('is_sentinels', true)), []
+  )
+  const { data: contentRows, refetch: refetchContent } = useSupabaseQuery(() => supabase.from('briefing_content').select('key, value'), [])
+
+  const lib = useMemo(() => Object.fromEntries((library || []).map((l) => [l.metric_key, l])), [library])
+  const seriesById = useMemo(() => Object.fromEntries((seriesRows || []).map((s) => [s.grid_series_id, s])), [seriesRows])
+  const content = useMemo(() => Object.fromEntries((contentRows || []).map((r) => [r.key, r.value])), [contentRows])
+
+  const saveContent = useCallback(async (key, value) => {
+    await supabase.from('briefing_content').upsert({ key, value, updated_at: new Date().toISOString() })
+    refetchContent()
+  }, [refetchContent])
+
+  const games = gameRows || []
+  const prows = playerRows || []
+
+  const cycleOpp = (goals && goals[0]?.cycle_opponent) || null
+  const cycleDate = (goals && goals[0]?.cycle_official_date) || null
+  const daysUntil = useMemo(() => {
+    if (!cycleDate) return null
+    const now = new Date(); now.setHours(0, 0, 0, 0)
+    const d = new Date(`${cycleDate}T00:00:00`)
+    return Math.round((d - now) / 86400000)
+  }, [cycleDate])
+
+  // win rates (all history)
+  const winRates = useMemo(() => {
+    const acc = { SCRIM: { w: 0, n: 0 }, ESPORTS: { w: 0, n: 0 } }
+    const vsOpp = { w: 0, n: 0 }
+    for (const g of games) {
+      const s = seriesById[g.grid_series_id]
+      if (!s || g.sentinels_won == null) continue
+      const b = acc[s.series_type]
+      if (b) { b.n++; if (g.sentinels_won) b.w++ }
+      if (cycleOpp && canonicalOpponentName(s.opponent_name || '') === cycleOpp) { vsOpp.n++; if (g.sentinels_won) vsOpp.w++ }
+    }
+    const pc = (b) => (b.n ? Math.round((b.w / b.n) * 100) : null)
+    return { scrim: pc(acc.SCRIM), scrimN: acc.SCRIM.n, official: pc(acc.ESPORTS), officialN: acc.ESPORTS.n, vsOppW: vsOpp.w, vsOppL: vsOpp.n - vsOpp.w, vsOppN: vsOpp.n }
+  }, [games, seriesById, cycleOpp])
+
+  // computed goals
+  const teamComputed = useMemo(() => (goals || []).filter((g) => g.scope === 'team')
+    .map((g) => ({ goal: g, c: computeGoal(g, lib, seriesById, games, prows) })), [goals, lib, seriesById, games, prows])
+  const playerComputed = useMemo(() => (goals || []).filter((g) => g.scope === 'player')
+    .map((g) => ({ goal: g, c: computeGoal(g, lib, seriesById, games, prows) }))
+    .sort((a, b) => ROSTER.indexOf(a.goal.player) - ROSTER.indexOf(b.goal.player)), [goals, lib, seriesById, games, prows])
+
+  const allProbs = [...teamComputed, ...playerComputed].map((x) => x.c.prob).filter((p) => p != null)
+  const teamProb = allProbs.length ? Math.round(allProbs.reduce((a, b) => a + b, 0) / allProbs.length) : null
+
+  const playerGroups = useMemo(() => {
+    const m = {}
+    for (const pc of playerComputed) (m[pc.goal.player] ??= []).push(pc)
+    return ROSTER.filter((p) => m[p]).map((p) => ({ player: p, goals: m[p] }))
+  }, [playerComputed])
+
+  // win conditions vs opponent (data-derived top 3, with coach override)
+  const derivedConds = useMemo(() => {
+    if (!cycleOpp) return []
+    const oppGames = games.filter((g) => { const s = seriesById[g.grid_series_id]; return s && g.riot_enriched && g.sentinels_won != null && canonicalOpponentName(s.opponent_name || '') === cycleOpp })
+    const pool = oppGames.length >= 6 ? oppGames : games.filter((g) => g.riot_enriched && g.sentinels_won != null)
+    const scored = WIN_CONDS.map((wc) => ({ label: wc.label, lift: conditionLift(pool, wc.test) })).filter((x) => x.lift != null)
+    scored.sort((a, b) => b.lift - a.lift)
+    return { top: scored.slice(0, 3), fromOpp: oppGames.length >= 6, n: pool.length }
+  }, [games, seriesById, cycleOpp])
+
+  const [editWC, setEditWC] = useState(false)
+  const winConditionText = (slot) => {
+    const ov = content[`wc:${cycleOpp}:${slot}`]
+    if (ov != null && ov !== '') return ov
+    return derivedConds.top?.[slot]?.label || null
+  }
+
+  const loading = goalsLoading || !gameRows || !playerRows || !seriesRows
+  const kpi = (label, value, sub, color) => (
+    <div style={{ background: 'var(--panel-2, #14161c)', border: '1px solid var(--border, #2b2b33)', borderRadius: 12, padding: '14px 18px', minWidth: 140 }}>
+      <div style={{ fontSize: 11, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '.05em' }}>{label}</div>
+      <div style={{ fontSize: 30, fontWeight: 800, lineHeight: 1.1, color: color || 'var(--text)' }}>{value}</div>
+      {sub && <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 2 }}>{sub}</div>}
+    </div>
+  )
+
+  return (
+    <div>
+      {/* ---------------- HERO ---------------- */}
+      <div className="panel" style={{ background: 'linear-gradient(135deg, #1a1130 0%, #10131a 60%)' }}>
+        {loading ? (
+          <div className="loading-state">Loading briefing…</div>
+        ) : !cycleOpp ? (
+          <div className="empty-state">No prep cycle set yet — add this week&apos;s goals and the briefing fills in.</div>
+        ) : (
+          <>
+            <div style={{ fontSize: 12, letterSpacing: '.14em', color: '#c9a227', textTransform: 'uppercase', fontWeight: 700 }}>Daily Briefing</div>
+            <div style={{ fontSize: 30, fontWeight: 800, margin: '4px 0 2px' }}>
+              {daysUntil != null && daysUntil >= 0
+                ? <>In <span style={{ color: '#e01e37' }}>{daysUntil}</span> {daysUntil === 1 ? 'day' : 'days'} we play <span style={{ color: '#fff' }}>{cycleOpp}</span></>
+                : <>Next official: <span style={{ color: '#fff' }}>{cycleOpp}</span></>}
+            </div>
+            {cycleDate && <div style={{ fontSize: 13, color: 'var(--text-faint)' }}>Official — {cycleDate}</div>}
+
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 16 }}>
+              {kpi('Scrim win rate', winRates.scrim != null ? `${winRates.scrim}%` : '—', `${winRates.scrimN} scrims`)}
+              {kpi('Official win rate', winRates.official != null ? `${winRates.official}%` : '—', `${winRates.officialN} officials`)}
+              {kpi('Team goal probability', teamProb != null ? `${teamProb}%` : '—', 'blended across all goals', probColor(teamProb))}
+              {winRates.vsOppN > 0 && kpi(`Record vs ${cycleOpp}`, `${winRates.vsOppW}–${winRates.vsOppL}`, `${winRates.vsOppN} games`)}
+            </div>
+
+            {/* win conditions */}
+            <div style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid #2b2b3a' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: 12, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '.05em' }}>Win conditions</span>
+                <button type="button" onClick={() => setEditWC((v) => !v)} style={{ fontSize: 11, color: '#8a91a0', background: 'transparent', border: '1px solid var(--border,#2b2b33)', borderRadius: 6, padding: '2px 8px', cursor: 'pointer' }}>
+                  {editWC ? 'done' : 'edit'}
+                </button>
+                {derivedConds.top && !derivedConds.fromOpp && <span style={{ fontSize: 10, color: 'var(--text-faint)' }}>(from all opponents — thin sample vs {cycleOpp})</span>}
+              </div>
+              {!editWC ? (
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 8 }}>
+                  {[0, 1, 2].map((slot) => {
+                    const t = winConditionText(slot)
+                    return t ? (
+                      <span key={slot} style={{ fontSize: 15, fontWeight: 700, padding: '6px 14px', borderRadius: 10, background: '#ffffff0d', border: '1px solid #3a3a4a' }}>
+                        <span style={{ color: '#c9a227', marginRight: 6 }}>{slot + 1}</span>{t}
+                      </span>
+                    ) : null
+                  })}
+                </div>
+              ) : (
+                <div style={{ display: 'grid', gap: 8, marginTop: 8, maxWidth: 460 }}>
+                  {[0, 1, 2].map((slot) => (
+                    <div key={slot} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ color: '#c9a227', fontWeight: 700 }}>{slot + 1}</span>
+                      <input
+                        defaultValue={content[`wc:${cycleOpp}:${slot}`] || ''}
+                        placeholder={derivedConds.top?.[slot]?.label || 'win condition'}
+                        onBlur={(e) => saveContent(`wc:${cycleOpp}:${slot}`, e.target.value)}
+                        style={{ flex: 1, background: 'var(--panel-2, #14161c)', color: 'var(--text)', border: '1px solid var(--border,#2b2b33)', borderRadius: 8, padding: '7px 10px', fontSize: 13 }}
+                      />
+                    </div>
+                  ))}
+                  <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>Leave blank to use the data-derived condition. Data picks: {(derivedConds.top || []).map((c) => `${c.label} (${c.lift > 0 ? '+' : ''}${Math.round(c.lift)}%)`).join(' · ') || '—'}</div>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+
+      {!loading && cycleOpp && (
+        <>
+          {/* ---------------- TEAM ---------------- */}
+          <div className="panel">
+            <h2 style={{ marginBottom: 2 }}>Where we stand — as a team</h2>
+            <p className="panel-caption" style={{ marginTop: 0 }}>
+              Each bar runs baseline → target; the dot is where this week&apos;s scrims currently sit. Green means at/beyond target.
+              The % is a blended read of how far we&apos;ve closed the gap and which way the last day moved — a direction, not a guarantee.
+            </p>
+            {teamComputed.length === 0 ? <div className="empty-state">No team goals active.</div> : (
+              <div>{teamComputed.map(({ goal, c }) => <GoalRow key={goal.id} goal={goal} c={c} />)}</div>
+            )}
+            <NoteBox value={content['note:__team__']} onSave={(v) => saveContent('note:__team__', v)} placeholder="Coach note to the team for today — focus, reminder, message for the room…" />
+          </div>
+
+          {/* ---------------- INDIVIDUAL ---------------- */}
+          <div className="panel">
+            <h2 style={{ marginBottom: 2 }}>Individual accountability</h2>
+            <p className="panel-caption" style={{ marginTop: 0 }}>
+              Every player owns their number. Same read as above, per person — plus a spot for a direct reminder from the coach that carries over day to day.
+            </p>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: 14 }}>
+              {playerGroups.map(({ player, goals: pg }) => {
+                const probs = pg.map((x) => x.c.prob).filter((p) => p != null)
+                const pProb = probs.length ? Math.round(probs.reduce((a, b) => a + b, 0) / probs.length) : null
+                return (
+                  <div key={player} style={{ border: '1px solid var(--border, #2b2b33)', borderRadius: 12, padding: '14px 16px', background: 'var(--panel-2, #14161c)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div style={{ fontSize: 18, fontWeight: 800, color: '#c9a227' }}>{player}</div>
+                      <ProbChip prob={pProb} />
+                    </div>
+                    {pg.map(({ goal, c }) => <GoalRow key={goal.id} goal={goal} c={c} compact />)}
+                    <NoteBox value={content[`note:${player}`]} onSave={(v) => saveContent(`note:${player}`, v)} placeholder={`Reminder for ${player}…`} />
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}

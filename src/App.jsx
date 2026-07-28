@@ -13,9 +13,11 @@ import GamePrep from './views/GamePrep.jsx'
 import DailySync from './views/DailySync.jsx'
 import MatchHistory from './views/MatchHistory.jsx'
 import GoalsTracker from './views/GoalsTracker.jsx'
+import DailyBriefing from './views/DailyBriefing.jsx'
 
 const TABS = [
   { key: 'matchHistory', label: 'Match History' },
+  { key: 'briefing', label: 'Daily Briefing' },
   { key: 'goals', label: 'Goals' },
   { key: 'sessions', label: 'Team Session Dashboard' },
   { key: 'opponents', label: 'Opponent Dossier' },
@@ -60,6 +62,7 @@ function App() {
 
       <main>
         {activeTab === 'matchHistory' && <MatchHistory />}
+        {activeTab === 'briefing' && <DailyBriefing />}
         {activeTab === 'goals' && <GoalsTracker />}
         {activeTab === 'sessions' && <TeamSessionDashboard />}
         {activeTab === 'opponents' && <OpponentDossier />}

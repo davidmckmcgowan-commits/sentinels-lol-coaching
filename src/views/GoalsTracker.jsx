@@ -26,6 +26,16 @@ function metricValue(key, games, prows) {
     case 'player_vision_score': return avg(prows, (p) => p.vision_score)
     case 'laners_cs_diff_15': return avg(prows, (p) => p.cs_diff_15)
     case 'laners_damage_per_min': return avg(prows, (p) => p.champ_damage_per_min)
+    case 'team_give_back_rate': {
+      const pp = games.reduce((a, g) => a + (g.positive_plays || 0), 0)
+      const gb = games.reduce((a, g) => a + (g.give_backs || 0), 0)
+      return pp ? (gb / pp) * 100 : null
+    }
+    case 'team_snowball_rate': {
+      const pp = games.reduce((a, g) => a + (g.positive_plays || 0), 0)
+      const sn = games.reduce((a, g) => a + (g.snowballs || 0), 0)
+      return pp ? (sn / pp) * 100 : null
+    }
     default: return null
   }
 }
@@ -190,7 +200,7 @@ export default function GoalsTracker() {
   )
   const { data: gameRows } = useSupabaseQuery(
     () => fetchAllRows(() => supabase.from('grid_games').select(
-      'id, grid_series_id, riot_enriched, gold_diff_15, cs_diff_15, first_tower_sentinels, sentinels_dragons, opponent_dragons, sentinels_grubs'
+      'id, grid_series_id, riot_enriched, gold_diff_15, cs_diff_15, first_tower_sentinels, sentinels_dragons, opponent_dragons, sentinels_grubs, positive_plays, give_backs, snowballs'
     )), []
   )
   const { data: playerRows } = useSupabaseQuery(
