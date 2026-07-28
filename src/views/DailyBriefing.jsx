@@ -126,12 +126,19 @@ function computeGoal(goal, lib, seriesById, games, prows) {
   if (latest != null && prev != null) {
     dayState = Math.abs(latest - prev) < 1e-9 ? 'flat' : (higher ? latest > prev : latest < prev) ? 'up' : 'down'
   }
+  // running week reading: is the week-to-date (all prep-week scrims combined)
+  // better than where we started (the baseline)? up / down / flat / null
+  let weekState = null
+  const weekDelta = wtd != null && baseline != null ? (higher ? wtd - baseline : baseline - wtd) : null
+  if (wtd != null && baseline != null) {
+    weekState = Math.abs(wtd - baseline) < 1e-9 ? 'flat' : weekDelta > 0 ? 'up' : 'down'
+  }
   // distance still to go to target from the latest day (negative = already met)
   const remaining = target != null && latest != null ? (higher ? target - latest : latest - target) : null
   const met = remaining != null && remaining <= 0
   const prob = goalProbability(baseline, wtd, target, latest, prev, higher)
 
-  return { meta, unit, higher, points, latest, prev, latestDate, prevDate, delta, wtd, baseline, target, onTrack, improving, dayState, remaining, met, prob }
+  return { meta, unit, higher, points, latest, prev, latestDate, prevDate, delta, wtd, baseline, target, onTrack, improving, dayState, weekState, weekDelta, remaining, met, prob }
 }
 
 // ---------------------------------------------------------------------------
@@ -200,62 +207,84 @@ function ProbChip({ prob }) {
   )
 }
 
-const VERDICT = {
+const DAY_VERDICT = {
   up: { t: 'Improved today', col: '#3aa76d', a: '▲' },
   down: { t: 'Slipped today', col: '#e0524a', a: '▼' },
   flat: { t: 'Held flat', col: '#e0a940', a: '—' },
   none: { t: 'No new day yet', col: '#8a91a0', a: '·' },
 }
+const WEEK_VERDICT = {
+  up: { t: 'Up this week', col: '#3aa76d', a: '▲' },
+  down: { t: 'Below baseline', col: '#e0524a', a: '▼' },
+  flat: { t: 'At baseline', col: '#e0a940', a: '—' },
+  none: { t: 'week —', col: '#8a91a0', a: '·' },
+}
 
-function VerdictPill({ dayState }) {
-  const v = VERDICT[dayState || 'none']
+function VerdictPill({ state, map, prefix }) {
+  const v = map[state || 'none']
   return (
-    <span style={{ fontSize: 12, fontWeight: 800, padding: '4px 11px', borderRadius: 20, background: `${v.col}22`, color: v.col, whiteSpace: 'nowrap' }}>
-      {v.a} {v.t}
+    <span style={{ fontSize: 11.5, fontWeight: 800, padding: '4px 10px', borderRadius: 20, background: `${v.col}22`, color: v.col, whiteSpace: 'nowrap' }}>
+      {prefix ? <span style={{ opacity: 0.6, fontWeight: 700, marginRight: 4 }}>{prefix}</span> : null}{v.a} {v.t}
     </span>
   )
 }
 
-// count how many goals improved / slipped / held today
+// count how many goals improved today and how many are up this week
 function rollup(list) {
   const withDay = list.filter((x) => x.c.dayState)
+  const withWeek = list.filter((x) => x.c.weekState)
   return {
     up: withDay.filter((x) => x.c.dayState === 'up').length,
     down: withDay.filter((x) => x.c.dayState === 'down').length,
     flat: withDay.filter((x) => x.c.dayState === 'flat').length,
     total: withDay.length,
+    wUp: withWeek.filter((x) => x.c.weekState === 'up').length,
+    wTotal: withWeek.length,
   }
 }
 
-// "X of Y improved today" strip — the accountability read at a glance
+// "X of Y improved today · X of Y up this week" — the accountability read
 function ReportCard({ r, size = 'lg' }) {
-  if (!r.total) return <span style={{ fontSize: 12, color: 'var(--text-faint)' }}>no new day to compare yet</span>
-  const good = r.up >= Math.ceil(r.total / 2)
-  const col = good ? '#3aa76d' : '#e0a940'
+  if (!r.total && !r.wTotal) return <span style={{ fontSize: 12, color: 'var(--text-faint)' }}>no data to compare yet</span>
+  const big = size === 'lg' ? 15 : 12.5
+  const small = size === 'lg' ? 12 : 11
+  const dayGood = r.up >= Math.ceil(r.total / 2)
+  const weekGood = r.wUp >= Math.ceil(r.wTotal / 2)
   return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: size === 'lg' ? 13 : 12 }}>
-      <span style={{ fontWeight: 800, color: col, fontSize: size === 'lg' ? 15 : 13 }}>{r.up} of {r.total} improved today</span>
-      <span style={{ color: 'var(--text-faint)' }}>
-        {r.down > 0 && <span style={{ color: '#e0524a' }}>▼{r.down} </span>}
-        {r.flat > 0 && <span style={{ color: '#e0a940' }}>—{r.flat}</span>}
-      </span>
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+      {r.total > 0 && (
+        <span style={{ fontWeight: 800, color: dayGood ? '#3aa76d' : '#e0a940', fontSize: big }}>
+          {r.up}/{r.total} improved today
+          {r.down > 0 && <span style={{ color: '#e0524a', fontWeight: 700, fontSize: small }}> ▼{r.down}</span>}
+        </span>
+      )}
+      {r.wTotal > 0 && (
+        <span style={{ fontWeight: 700, color: weekGood ? '#3aa76d' : '#e0a940', fontSize: small }}>
+          · {r.wUp}/{r.wTotal} up this week
+        </span>
+      )}
     </span>
   )
 }
 
 function GoalRow({ goal, c, compact }) {
-  const dc = c.dayState === 'up' ? '#3aa76d' : c.dayState === 'down' ? '#e0524a' : c.dayState === 'flat' ? '#e0a940' : 'var(--text-faint)'
+  const stateColor = (s) => s === 'up' ? '#3aa76d' : s === 'down' ? '#e0524a' : s === 'flat' ? '#e0a940' : 'var(--text-faint)'
+  const dc = stateColor(c.dayState)
+  const wc = stateColor(c.weekState)
   const gapMag = (v, unit) => unit === '%' ? `${Math.round(v)}%` : unit === 'gold' ? `${Math.round(v)}` : (unit === 'CS' || unit === 'CS/min') ? v.toFixed(1) : `${Math.round(v * 10) / 10}`
   const gapText = c.remaining == null ? '—' : c.met ? 'target met ✓' : `${gapMag(c.remaining, c.unit)} to go`
   return (
     <div style={{ padding: '12px 0', borderTop: '1px solid var(--border, #2b2b33)' }}>
-      {/* headline: the accountability call */}
+      {/* headline: the accountability call — day-by-day and running week */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
         <div style={{ fontWeight: 600, fontSize: compact ? 13 : 14 }}>
           {c.meta.label || goal.metric_key}
           <span style={{ color: 'var(--text-faint)', fontWeight: 400, marginLeft: 8, fontSize: 12 }}>{goal.intent}</span>
         </div>
-        <VerdictPill dayState={c.dayState} />
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          <VerdictPill state={c.dayState} map={DAY_VERDICT} />
+          <VerdictPill state={c.weekState} map={WEEK_VERDICT} />
+        </div>
       </div>
 
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 16, flexWrap: 'wrap', marginTop: 6 }}>
@@ -271,6 +300,13 @@ function GoalRow({ goal, c, compact }) {
           </div>
         </div>
         <div>
+          <div style={{ fontSize: 10, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Week so far</div>
+          <div style={{ fontSize: 16, fontWeight: 800, color: wc }}>
+            {fmt(c.wtd, c.unit)}
+            {c.weekDelta != null && <span style={{ fontSize: 12, fontWeight: 700, marginLeft: 6 }}>{c.weekState === 'up' ? '▲' : c.weekState === 'down' ? '▼' : '—'}{gapMag(Math.abs(c.weekDelta), c.unit)} vs base</span>}
+          </div>
+        </div>
+        <div>
           <div style={{ fontSize: 10, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Gap to target</div>
           <div style={{ fontSize: 16, fontWeight: 700, color: c.met ? '#3aa76d' : '#c9a227' }}>{gapText}</div>
         </div>
@@ -282,7 +318,7 @@ function GoalRow({ goal, c, compact }) {
       <StandBar baseline={c.baseline} current={c.latest} target={c.target} higher={c.higher} onTrack={c.met} />
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 10, color: 'var(--text-faint)' }}>
         <span>baseline {fmt(c.baseline, c.unit)}</span>
-        <span>week-to-date {fmt(c.wtd, c.unit)} · target {fmt(c.target, c.unit)}</span>
+        <span>target {fmt(c.target, c.unit)}</span>
       </div>
     </div>
   )
@@ -525,8 +561,8 @@ export default function DailyBriefing() {
               <ReportCard r={rollup(teamComputed)} />
             </div>
             <p className="panel-caption" style={{ marginTop: 0 }}>
-              The call on each goal is today vs yesterday: did the last scrim day move the number toward target? The bar runs baseline → target with today&apos;s dot;
-              week-to-date and the readiness gauge up top give the fuller picture, but accountability is the daily line.
+              Two reads per goal: <b>did it improve today</b> (latest scrim day vs the day before) and <b>is it up this week</b> (all prep-week
+              scrims combined vs the baseline we started from). The bar runs baseline → target with today&apos;s dot; the pills give the daily and running verdicts.
             </p>
             {teamComputed.length === 0 ? <div className="empty-state">No team goals active.</div> : (
               <div>{teamComputed.map(({ goal, c }) => <GoalRow key={goal.id} goal={goal} c={c} />)}</div>
