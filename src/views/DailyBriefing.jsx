@@ -98,7 +98,7 @@ function computeGoal(goal, lib, seriesById, games, prows) {
     ? prows.filter((p) => p.player !== 'Huhi' && idSet.has(p.game_id))
     : goal.scope === 'player' ? prows.filter((p) => p.player === goal.player && idSet.has(p.game_id)) : []
 
-  const enriched = games.filter((g) => { const s = seriesById[g.grid_series_id]; return s && s.series_type === 'SCRIM' && g.riot_enriched })
+  const enriched = games.filter((g) => { const s = seriesById[g.grid_series_id]; return s && s.series_type === 'SCRIM' && g.riot_enriched && g.game_duration_s >= MIN_REAL_GAME_S })
   const dates = [...new Set(enriched.map((g) => seriesById[g.grid_series_id].series_date))].sort().slice(-WINDOW_DAYS)
 
   const points = dates.map((date) => {

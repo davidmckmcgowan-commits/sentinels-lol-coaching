@@ -4,6 +4,9 @@ import { useSupabaseQuery, fetchAllRows } from '../lib/useSupabaseQuery.js'
 
 const ROLE_ORDER = ['TOP', 'JUNGLE', 'MIDDLE', 'BOTTOM', 'UTILITY']
 const WINDOW_DAYS = 12 // how many recent scrim days to trend
+// A League game can't end before 15:00 — shorter rows are remakes/aborts and
+// are excluded so their junk stats don't skew the daily/weekly readings.
+const MIN_REAL_GAME_S = 900
 
 const avg = (arr, f) => { const v = arr.map(f).filter((x) => x != null); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null }
 const rate = (arr, f) => { const v = arr.map(f).filter((x) => x != null); return v.length ? (v.filter(Boolean).length / v.length) * 100 : null }
@@ -94,13 +97,13 @@ function GoalCard({ goal, lib, series, games, prows }) {
     const dateSet = new Set()
     for (const g of games) {
       const s = series[g.grid_series_id]
-      if (s && s.series_type === 'SCRIM' && g.riot_enriched) dateSet.add(s.series_date)
+      if (s && s.series_type === 'SCRIM' && g.riot_enriched && g.game_duration_s >= MIN_REAL_GAME_S) dateSet.add(s.series_date)
     }
     return [...dateSet].sort().slice(-WINDOW_DAYS)
   }, [games, series])
 
   const points = useMemo(() => days.map((date) => {
-    const dayGames = games.filter((g) => { const s = series[g.grid_series_id]; return s && s.series_date === date && s.series_type === 'SCRIM' && g.riot_enriched })
+    const dayGames = games.filter((g) => { const s = series[g.grid_series_id]; return s && s.series_date === date && s.series_type === 'SCRIM' && g.riot_enriched && g.game_duration_s >= MIN_REAL_GAME_S })
     const dayGameIds = new Set(dayGames.map((g) => g.id))
     const dayPlayer = playersForDay(dayGameIds)
     return { date, value: metricValue(goal.metric_key, dayGames, dayPlayer) }
@@ -115,7 +118,7 @@ function GoalCard({ goal, lib, series, games, prows }) {
 
   // week-to-date: metric over all window games at once
   const wtd = useMemo(() => {
-    const winGames = games.filter((g) => { const s = series[g.grid_series_id]; return s && days.includes(s.series_date) && s.series_type === 'SCRIM' && g.riot_enriched })
+    const winGames = games.filter((g) => { const s = series[g.grid_series_id]; return s && days.includes(s.series_date) && s.series_type === 'SCRIM' && g.riot_enriched && g.game_duration_s >= MIN_REAL_GAME_S })
     const winIds = new Set(winGames.map((g) => g.id))
     const winPlayer = playersForDay(winIds)
     return metricValue(goal.metric_key, winGames, winPlayer)
@@ -124,7 +127,7 @@ function GoalCard({ goal, lib, series, games, prows }) {
   // for team laner goals, find the weakest individual across the window
   const weakest = useMemo(() => {
     if (!isLaners) return null
-    const winGames = games.filter((g) => { const s = series[g.grid_series_id]; return s && days.includes(s.series_date) && s.series_type === 'SCRIM' && g.riot_enriched })
+    const winGames = games.filter((g) => { const s = series[g.grid_series_id]; return s && days.includes(s.series_date) && s.series_type === 'SCRIM' && g.riot_enriched && g.game_duration_s >= MIN_REAL_GAME_S })
     const winIds = new Set(winGames.map((g) => g.id))
     const per = ['Impact', 'HamBak', 'DARKWINGS', 'Rahel']
       .map((pl) => ({ player: pl, value: metricValue(goal.metric_key, [], prows.filter((p) => p.player === pl && winIds.has(p.game_id))) }))
@@ -200,7 +203,7 @@ export default function GoalsTracker() {
   )
   const { data: gameRows } = useSupabaseQuery(
     () => fetchAllRows(() => supabase.from('grid_games').select(
-      'id, grid_series_id, riot_enriched, gold_diff_15, cs_diff_15, first_tower_sentinels, sentinels_dragons, opponent_dragons, sentinels_grubs, positive_plays, give_backs, snowballs'
+      'id, grid_series_id, riot_enriched, game_duration_s, gold_diff_15, cs_diff_15, first_tower_sentinels, sentinels_dragons, opponent_dragons, sentinels_grubs, positive_plays, give_backs, snowballs'
     )), []
   )
   const { data: playerRows } = useSupabaseQuery(
