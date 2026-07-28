@@ -2,6 +2,13 @@ import { useMemo, useState, useEffect, useCallback } from 'react'
 import { supabase } from '../lib/supabaseClient.js'
 import { useSupabaseQuery, fetchAllRows } from '../lib/useSupabaseQuery.js'
 import { canonicalOpponentName } from '../lib/constants.js'
+import InfoTip from '../components/InfoTip.jsx'
+
+// A League game can't legitimately end before 15:00 (no surrender vote, no
+// realistic nexus kill sooner), so anything shorter is a remake/abort/void
+// game. We only count completed games in win rates and records.
+const MIN_REAL_GAME_S = 900
+const READINESS_HELP = 'A 0–100 readiness index across all active goals — not a match-win prediction. For each goal it blends how much of the baseline→target gap is currently closed with whether the last scrim day moved toward or away from target, then averages across every goal. Read it as prep direction-of-travel: low early in the week, climbing as the numbers move toward target.'
 
 // ---------------------------------------------------------------------------
 // Metric helpers — kept in step with GoalsTracker so both pages read the same.
@@ -175,8 +182,11 @@ function ProbChip({ prob }) {
   if (prob == null) return <span style={{ fontSize: 11, color: 'var(--text-faint)' }}>—</span>
   const c = probColor(prob)
   return (
-    <span style={{ fontSize: 12, fontWeight: 700, padding: '3px 9px', borderRadius: 20, background: `${c}22`, color: c, whiteSpace: 'nowrap' }}>
-      {prob}% to hit target
+    <span
+      title="Readiness: how far this goal is toward target, nudged by the last scrim day's direction. Not a prediction."
+      style={{ fontSize: 12, fontWeight: 700, padding: '3px 9px', borderRadius: 20, background: `${c}22`, color: c, whiteSpace: 'nowrap', cursor: 'help' }}
+    >
+      {prob}% ready
     </span>
   )
 }
@@ -273,7 +283,7 @@ export default function DailyBriefing() {
   const { data: seriesRows } = useSupabaseQuery(() => supabase.from('grid_series').select('grid_series_id, series_date, series_type, opponent_name'), [])
   const { data: gameRows } = useSupabaseQuery(
     () => fetchAllRows(() => supabase.from('grid_games').select(
-      'id, grid_series_id, sentinels_won, riot_enriched, gold_diff_15, cs_diff_15, first_blood_sentinels, first_tower_sentinels, sentinels_dragons, opponent_dragons, sentinels_heralds, sentinels_grubs, positive_plays, give_backs, snowballs'
+      'id, grid_series_id, sentinels_won, riot_enriched, game_duration_s, gold_diff_15, cs_diff_15, first_blood_sentinels, first_tower_sentinels, sentinels_dragons, opponent_dragons, sentinels_heralds, sentinels_grubs, positive_plays, give_backs, snowballs'
     )), []
   )
   const { data: playerRows } = useSupabaseQuery(
@@ -304,19 +314,24 @@ export default function DailyBriefing() {
     return Math.round((d - now) / 86400000)
   }, [cycleDate])
 
-  // win rates (all history)
-  const winRates = useMemo(() => {
-    const acc = { SCRIM: { w: 0, n: 0 }, ESPORTS: { w: 0, n: 0 } }
-    const vsOpp = { w: 0, n: 0 }
+  // Head-to-head vs the upcoming opponent — completed games only (remakes excluded)
+  const vsOpp = useMemo(() => {
+    const scrim = { w: 0, l: 0 }, official = { w: 0, l: 0 }
     for (const g of games) {
       const s = seriesById[g.grid_series_id]
       if (!s || g.sentinels_won == null) continue
-      const b = acc[s.series_type]
-      if (b) { b.n++; if (g.sentinels_won) b.w++ }
-      if (cycleOpp && canonicalOpponentName(s.opponent_name || '') === cycleOpp) { vsOpp.n++; if (g.sentinels_won) vsOpp.w++ }
+      if (!cycleOpp || canonicalOpponentName(s.opponent_name || '') !== cycleOpp) continue
+      if (!(g.game_duration_s >= MIN_REAL_GAME_S)) continue
+      const b = s.series_type === 'ESPORTS' ? official : s.series_type === 'SCRIM' ? scrim : null
+      if (!b) continue
+      if (g.sentinels_won) b.w++; else b.l++
     }
-    const pc = (b) => (b.n ? Math.round((b.w / b.n) * 100) : null)
-    return { scrim: pc(acc.SCRIM), scrimN: acc.SCRIM.n, official: pc(acc.ESPORTS), officialN: acc.ESPORTS.n, vsOppW: vsOpp.w, vsOppL: vsOpp.n - vsOpp.w, vsOppN: vsOpp.n }
+    const wr = (b) => { const n = b.w + b.l; return n ? Math.round((b.w / n) * 100) : null }
+    return {
+      scrim, official, scrimWR: wr(scrim), officialWR: wr(official),
+      totW: scrim.w + official.w, totL: scrim.l + official.l,
+      totN: scrim.w + scrim.l + official.w + official.l,
+    }
   }, [games, seriesById, cycleOpp])
 
   // computed goals
@@ -338,8 +353,8 @@ export default function DailyBriefing() {
   // win conditions vs opponent (data-derived top 3, with coach override)
   const derivedConds = useMemo(() => {
     if (!cycleOpp) return []
-    const oppGames = games.filter((g) => { const s = seriesById[g.grid_series_id]; return s && g.riot_enriched && g.sentinels_won != null && canonicalOpponentName(s.opponent_name || '') === cycleOpp })
-    const pool = oppGames.length >= 6 ? oppGames : games.filter((g) => g.riot_enriched && g.sentinels_won != null)
+    const oppGames = games.filter((g) => { const s = seriesById[g.grid_series_id]; return s && g.riot_enriched && g.sentinels_won != null && g.game_duration_s >= MIN_REAL_GAME_S && canonicalOpponentName(s.opponent_name || '') === cycleOpp })
+    const pool = oppGames.length >= 6 ? oppGames : games.filter((g) => g.riot_enriched && g.sentinels_won != null && g.game_duration_s >= MIN_REAL_GAME_S)
     const scored = WIN_CONDS.map((wc) => ({ label: wc.label, lift: conditionLift(pool, wc.test) })).filter((x) => x.lift != null)
     scored.sort((a, b) => b.lift - a.lift)
     return { top: scored.slice(0, 3), fromOpp: oppGames.length >= 6, n: pool.length }
@@ -353,9 +368,9 @@ export default function DailyBriefing() {
   }
 
   const loading = goalsLoading || !gameRows || !playerRows || !seriesRows
-  const kpi = (label, value, sub, color) => (
+  const kpi = (label, value, sub, color, info) => (
     <div style={{ background: 'var(--panel-2, #14161c)', border: '1px solid var(--border, #2b2b33)', borderRadius: 12, padding: '14px 18px', minWidth: 140 }}>
-      <div style={{ fontSize: 11, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '.05em' }}>{label}</div>
+      <div style={{ fontSize: 11, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '.05em' }}>{label}{info ? <InfoTip text={info} /> : null}</div>
       <div style={{ fontSize: 30, fontWeight: 800, lineHeight: 1.1, color: color || 'var(--text)' }}>{value}</div>
       {sub && <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 2 }}>{sub}</div>}
     </div>
@@ -380,10 +395,10 @@ export default function DailyBriefing() {
             {cycleDate && <div style={{ fontSize: 13, color: 'var(--text-faint)' }}>Official — {cycleDate}</div>}
 
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 16 }}>
-              {kpi('Scrim win rate', winRates.scrim != null ? `${winRates.scrim}%` : '—', `${winRates.scrimN} scrims`)}
-              {kpi('Official win rate', winRates.official != null ? `${winRates.official}%` : '—', `${winRates.officialN} officials`)}
-              {kpi('Team goal probability', teamProb != null ? `${teamProb}%` : '—', 'blended across all goals', probColor(teamProb))}
-              {winRates.vsOppN > 0 && kpi(`Record vs ${cycleOpp}`, `${winRates.vsOppW}–${winRates.vsOppL}`, `${winRates.vsOppN} games`)}
+              {kpi(`Record vs ${cycleOpp}`, vsOpp.totN ? `${vsOpp.totW}–${vsOpp.totL}` : '—', `${vsOpp.totN} completed games`, undefined, `Completed games only — remakes and games under ${Math.round(MIN_REAL_GAME_S / 60)} min are excluded, so this matches your real head-to-head.`)}
+              {kpi(`Scrims vs ${cycleOpp}`, vsOpp.scrimWR != null ? `${vsOpp.scrimWR}%` : '—', `${vsOpp.scrim.w}–${vsOpp.scrim.l} in scrims`)}
+              {kpi(`Officials vs ${cycleOpp}`, vsOpp.official.w + vsOpp.official.l ? `${vsOpp.official.w}–${vsOpp.official.l}` : '—', `${vsOpp.official.w + vsOpp.official.l} official games`)}
+              {kpi('Goal readiness', teamProb != null ? `${teamProb}%` : '—', 'avg progress to this week’s targets', probColor(teamProb), READINESS_HELP)}
             </div>
 
             {/* win conditions */}
