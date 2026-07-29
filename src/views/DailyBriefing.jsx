@@ -2,6 +2,8 @@ import { useMemo, useState, useEffect, useCallback } from 'react'
 import { supabase } from '../lib/supabaseClient.js'
 import { useSupabaseQuery, fetchAllRows } from '../lib/useSupabaseQuery.js'
 import { canonicalOpponentName } from '../lib/constants.js'
+import { prognosticPct, fmtPct, todayISO, addDaysISO } from '../lib/prognostic.js'
+import DmGraph from '../components/DmGraph.jsx'
 import InfoTip from '../components/InfoTip.jsx'
 
 // A League game can't legitimately end before 15:00 (no surrender vote, no
@@ -119,7 +121,7 @@ const probColor = (p) => (p == null ? '#8a91a0' : p >= 66 ? '#3aa76d' : p >= 40 
 // ---------------------------------------------------------------------------
 // Per-goal computation over the recent scrim window
 // ---------------------------------------------------------------------------
-function computeGoal(goal, lib, seriesById, games, prows) {
+function computeGoal(goal, lib, seriesById, games, prows, cycleOpp) {
   const meta = lib[goal.metric_key] || {}
   const unit = meta.unit
   const higher = meta.higher_is_better !== false
@@ -168,7 +170,27 @@ function computeGoal(goal, lib, seriesById, games, prows) {
   const met = remaining != null && remaining <= 0
   const prob = goalProbability(baseline, wtd, target, latest, prev, higher)
 
-  return { meta, unit, higher, points, latest, prev, latestDate, prevDate, delta, wtd, baseline, target, onTrack, improving, dayState, weekState, weekDelta, remaining, met, prob }
+  // --- Prognostic DM graph vs the upcoming opponent, over the prep week ------
+  // PAR = our historical average on this metric vs the next official opponent.
+  const parGames = cycleOpp ? games.filter((g) => { const s = seriesById[g.grid_series_id]; return s && g.riot_enriched && g.game_duration_s >= MIN_REAL_GAME_S && canonicalOpponentName(s.opponent_name || '') === cycleOpp }) : []
+  const par = parGames.length ? metricValue(goal.metric_key, parGames, playersFor(new Set(parGames.map((g) => g.id)))) : null
+  const today = todayISO()
+  const pStart = goal.trend_start_date || (goal.cycle_official_date ? addDaysISO(goal.cycle_official_date, -6) : null)
+  const pEnd = goal.trend_end_date || goal.cycle_official_date || null
+  let dm = null
+  if (par != null && pStart && pEnd) {
+    const capEnd = today < pEnd ? today : pEnd
+    const inWin = games.map((g) => { const s = seriesById[g.grid_series_id]; if (!s || s.series_type !== 'SCRIM' || !g.riot_enriched || g.game_duration_s < MIN_REAL_GAME_S) return null; if (s.series_date < pStart || s.series_date > capEnd) return null; return { g, date: s.series_date } }).filter(Boolean)
+      .sort((a, b) => a.date !== b.date ? a.date.localeCompare(b.date) : (a.g.game_number ?? 0) - (b.g.game_number ?? 0))
+    const byDay = {}
+    for (const it of inWin) (byDay[it.date] ??= []).push(it.g)
+    const dayData = Object.keys(byDay).sort().map((date) => { const dg = byDay[date]; return { date, pct: prognosticPct(metricValue(goal.metric_key, dg, playersFor(new Set(dg.map((g) => g.id)))), par, higher) } })
+    const gameData = inWin.map((it) => { const dg = byDay[it.date]; return { date: it.date, idxInDay: dg.indexOf(it.g), dayCount: dg.length, pct: prognosticPct(metricValue(goal.metric_key, [it.g], playersFor(new Set([it.g.id]))), par, higher) } })
+    const latestPct = [...dayData].reverse().find((d) => d.pct != null)?.pct ?? null
+    dm = { start: pStart, end: pEnd, today, dayData, gameData, par, parLabel: `${fmt(par, unit)} vs ${cycleOpp}`, latestPct }
+  }
+
+  return { meta, unit, higher, points, latest, prev, latestDate, prevDate, delta, wtd, baseline, target, onTrack, improving, dayState, weekState, weekDelta, remaining, met, prob, par, dm }
 }
 
 // ---------------------------------------------------------------------------
@@ -349,16 +371,25 @@ function GoalRow({ goal, c, compact, opponent }) {
           <div style={LBL_HELP} title={COL_HELP.gap}>Gap to target</div>
           <div style={{ fontSize: 16, fontWeight: 700, color: c.met ? '#3aa76d' : '#c9a227' }}>{gapText}</div>
         </div>
-        <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
-          <Sparkline points={c.points} target={c.target} higher={c.higher} />
-        </div>
+        {c.dm && c.dm.latestPct != null && (
+          <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
+            <div style={LBL_HELP} title={`Prognostic — our latest scrim day as a % of our historical par vs ${opponent || 'the opponent'}. 100% = at par; over 100% = improvement by definition.`}>vs {opponent || 'opp'} par</div>
+            <div style={{ fontSize: 20, fontWeight: 800, color: c.dm.latestPct >= 100 ? '#3aa76d' : '#e0524a' }}>{fmtPct(c.dm.latestPct)}</div>
+          </div>
+        )}
       </div>
 
-      <StandBar baseline={c.baseline} current={c.latest} target={c.target} higher={c.higher} onTrack={c.met} />
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 10, color: 'var(--text-faint)' }}>
-        <span style={{ cursor: 'help' }} title={COL_HELP.baseline}>baseline {fmt(c.baseline, c.unit)}</span>
-        <span style={{ cursor: 'help' }} title={COL_HELP.target}>target {fmt(c.target, c.unit)}</span>
-      </div>
+      {c.dm
+        ? <div style={{ marginTop: 8 }}><DmGraph start={c.dm.start} end={c.dm.end} today={c.dm.today} dayData={c.dm.dayData} gameData={c.dm.gameData} showProjection parLabel={c.dm.parLabel} compact /></div>
+        : (
+          <>
+            <StandBar baseline={c.baseline} current={c.latest} target={c.target} higher={c.higher} onTrack={c.met} />
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 10, color: 'var(--text-faint)' }}>
+              <span style={{ cursor: 'help' }} title={COL_HELP.baseline}>baseline {fmt(c.baseline, c.unit)}</span>
+              <span style={{ cursor: 'help' }} title={COL_HELP.target}>target {fmt(c.target, c.unit)}</span>
+            </div>
+          </>
+        )}
     </div>
   )
 }
@@ -414,7 +445,7 @@ export default function DailyBriefing() {
   const { data: seriesRows, refetch: refetchSeries } = useSupabaseQuery(() => supabase.from('grid_series').select('grid_series_id, series_date, series_type, opponent_name'), [])
   const { data: gameRows, refetch: refetchGames } = useSupabaseQuery(
     () => fetchAllRows(() => supabase.from('grid_games').select(
-      'id, grid_series_id, sentinels_won, riot_enriched, game_duration_s, gold_diff_15, cs_diff_15, first_blood_sentinels, first_tower_sentinels, sentinels_dragons, opponent_dragons, sentinels_heralds, sentinels_grubs, positive_plays, give_backs, snowballs'
+      'id, grid_series_id, game_number, sentinels_won, riot_enriched, game_duration_s, gold_diff_15, cs_diff_15, first_blood_sentinels, first_tower_sentinels, sentinels_dragons, opponent_dragons, sentinels_heralds, sentinels_grubs, positive_plays, give_backs, snowballs'
     )), []
   )
   const { data: playerRows, refetch: refetchPlayers } = useSupabaseQuery(
@@ -476,10 +507,10 @@ export default function DailyBriefing() {
 
   // computed goals
   const teamComputed = useMemo(() => (goals || []).filter((g) => g.scope === 'team')
-    .map((g) => ({ goal: g, c: computeGoal(g, lib, seriesById, games, prows) })), [goals, lib, seriesById, games, prows])
+    .map((g) => ({ goal: g, c: computeGoal(g, lib, seriesById, games, prows, cycleOpp) })), [goals, lib, seriesById, games, prows, cycleOpp])
   const playerComputed = useMemo(() => (goals || []).filter((g) => g.scope === 'player')
-    .map((g) => ({ goal: g, c: computeGoal(g, lib, seriesById, games, prows) }))
-    .sort((a, b) => ROSTER.indexOf(a.goal.player) - ROSTER.indexOf(b.goal.player)), [goals, lib, seriesById, games, prows])
+    .map((g) => ({ goal: g, c: computeGoal(g, lib, seriesById, games, prows, cycleOpp) }))
+    .sort((a, b) => ROSTER.indexOf(a.goal.player) - ROSTER.indexOf(b.goal.player)), [goals, lib, seriesById, games, prows, cycleOpp])
 
   const allProbs = [...teamComputed, ...playerComputed].map((x) => x.c.prob).filter((p) => p != null)
   const teamProb = allProbs.length ? Math.round(allProbs.reduce((a, b) => a + b, 0) / allProbs.length) : null
@@ -601,7 +632,7 @@ export default function DailyBriefing() {
             </div>
             <p className="panel-caption" style={{ marginTop: 0 }}>
               Two reads per goal: <b>did it improve today</b> (latest scrim day vs the day before) and <b>is it up this week</b> (all prep-week
-              scrims combined vs the baseline we started from). The bar runs baseline → target with today&apos;s dot; the pills give the daily and running verdicts.
+              scrims combined vs the baseline we started from). The graph is the prognostic view — this week&apos;s scrims as a % of our historical par vs {cycleOpp}: the <b style={{ color: '#c9a227' }}>100% line</b> is that par, and anything <b style={{ color: '#3aa76d' }}>over 100%</b> means we&apos;re heading in better than we&apos;ve historically played them. The pills give the daily and running verdicts.
             </p>
             {teamComputed.length === 0 ? <div className="empty-state">No team goals active.</div> : (
               <div>{teamComputed.map(({ goal, c }) => <GoalRow key={goal.id} goal={goal} c={c} opponent={cycleOpp} />)}</div>
