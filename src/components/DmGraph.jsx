@@ -41,8 +41,8 @@ export default function DmGraph({ start, end, today, dayData, gameData, showProj
   const trendY = (dn) => fit ? fit.intercept + fit.slope * dn : null
   const solidPath = fit ? `M${px(x0).toFixed(1)},${y(trendY(x0)).toFixed(1)} L${px(todayNum).toFixed(1)},${y(trendY(todayNum)).toFixed(1)}` : null
   const projPath = fit && showProjection && todayNum < totalDays ? `M${px(todayNum).toFixed(1)},${y(trendY(todayNum)).toFixed(1)} L${px(totalDays).toFixed(1)},${y(trendY(totalDays)).toFixed(1)}` : null
-  const slopeUp = fit ? fit.slope > 0.001 : null
-  const trendColor = fit == null ? C_TREND : Math.abs(fit.slope) < 0.001 ? '#8a91a0' : slopeUp ? C_UP : C_DOWN
+  // Trend is always blue to match the legend; direction is read from the slope
+  // itself and from the green (above-par) / red (below-par) background zones.
 
   // D — each game, nudged within its day so a day reads left→right
   const gPts = gd.map((g) => {
@@ -92,8 +92,8 @@ export default function DmGraph({ start, end, today, dayData, gameData, showProj
             {/* day markers */}
             {dd.map((d, i) => <circle key={`d${i}`} cx={pxDate(d.date) + dayWidth * 0.3} cy={y(d.pct)} r={2.5} fill={C_TREND} opacity="0.5" vectorEffect="non-scaling-stroke" />)}
             {/* C — trend + projection */}
-            {solidPath && <path d={solidPath} fill="none" stroke={trendColor} strokeWidth="2.5" vectorEffect="non-scaling-stroke" />}
-            {projPath && <path d={projPath} fill="none" stroke={trendColor} strokeWidth="2.5" strokeDasharray="7 5" opacity="0.85" vectorEffect="non-scaling-stroke" />}
+            {solidPath && <path d={solidPath} fill="none" stroke={C_TREND} strokeWidth="2.5" vectorEffect="non-scaling-stroke" />}
+            {projPath && <path d={projPath} fill="none" stroke={C_TREND} strokeWidth="2.5" strokeDasharray="7 5" opacity="0.85" vectorEffect="non-scaling-stroke" />}
           </svg>
           <span style={{ position: 'absolute', top: -2, left: `calc(${pctLeft(todayNum)}% - 2px)`, transform: 'translateX(-50%)', fontSize: 9, color: C_TODAY, whiteSpace: 'nowrap' }}>today</span>
           <div style={{ position: 'relative', height: 24, marginTop: 2 }}>
