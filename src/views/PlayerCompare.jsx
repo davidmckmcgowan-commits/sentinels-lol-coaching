@@ -135,7 +135,7 @@ export default function PlayerCompare() {
 
       <p className="panel-caption" style={{ marginTop: 0 }}>
         <b style={{ color: 'var(--text)' }}>{player}</b>&rsquo;s <b style={{ color: 'var(--text)' }}>{metric.label}</b> against <b style={{ color: COL_TEAM }}>{selTeam}</b> vs the rest of the field.
-        Big number is the median; small line is the 25th–75th range and game count. <b>Δ</b> is his median vs that team minus his median vs the field — green means he steps up against them, red means he drops off. Completed games only.
+        Big number is the median; small line is the 25th–75th range and game count. The <b>right column (Δ vs field)</b> is the coaching read — how he does against this team relative to everyone else. The <b>bottom row (Officials − Scrims)</b> is the performance read — does he hold his scrim level in officials, or drop off. Green = up, red = down. Completed games only.
       </p>
 
       {pLoading && <div className="loading-state">Loading…</div>}
@@ -167,6 +167,21 @@ export default function PlayerCompare() {
                   </tr>
                 )
               })}
+              {(() => {
+                const scr = rows[0], off = rows[1]
+                const diff = (a, b) => (a != null && b != null ? b - a : null)
+                const dt = diff(scr.team.p50, off.team.p50)
+                const df = diff(scr.field.p50, off.field.p50)
+                const col = (d) => (d == null ? 'var(--text-faint)' : d > 0 ? '#3aa76d' : d < 0 ? '#e0524a' : 'var(--text-faint)')
+                return (
+                  <tr style={{ background: 'var(--panel-2, #14161c)' }}>
+                    <td style={{ ...td, fontWeight: 700, fontSize: 12, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '.03em' }}>Δ Officials − Scrims</td>
+                    <td style={{ ...td, fontSize: 18, fontWeight: 800, color: col(dt) }}>{dt == null ? '—' : dstr(dt)}</td>
+                    <td style={{ ...td, fontSize: 18, fontWeight: 800, color: col(df) }}>{df == null ? '—' : dstr(df)}</td>
+                    <td style={td}></td>
+                  </tr>
+                )
+              })()}
             </tbody>
           </table>
         </div>
