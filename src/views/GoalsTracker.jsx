@@ -2,14 +2,40 @@ import { useMemo, useState } from 'react'
 import { supabase } from '../lib/supabaseClient.js'
 import { useSupabaseQuery, fetchAllRows } from '../lib/useSupabaseQuery.js'
 
-const ROLE_ORDER = ['TOP', 'JUNGLE', 'MIDDLE', 'BOTTOM', 'UTILITY']
-const WINDOW_DAYS = 12 // how many recent scrim days to trend
 // A League game can't end before 15:00 — shorter rows are remakes/aborts and
-// are excluded so their junk stats don't skew the daily/weekly readings.
+// are excluded so their junk stats don't skew the readings.
 const MIN_REAL_GAME_S = 900
+
+// DM Performance Visualization Graph colours
+const C_START = '#8a91a0'   // A — where we started (grey dashed)
+const C_TARGET = '#c9a227'  // B — the target (gold dashed)
+const C_TREND = '#4c8bf5'   // C — the trend (best-fit direction, blue)
+const C_GAME = '#2dd4bf'    // D — each individual game (teal)
+const C_TODAY = '#e5534b'
 
 const avg = (arr, f) => { const v = arr.map(f).filter((x) => x != null); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null }
 const rate = (arr, f) => { const v = arr.map(f).filter((x) => x != null); return v.length ? (v.filter(Boolean).length / v.length) * 100 : null }
+
+// ---- date helpers (calendar days, TZ-safe via UTC noon) --------------------
+const parseISO = (s) => new Date(s + 'T12:00:00Z')
+const isoOf = (d) => d.toISOString().slice(0, 10)
+const daysBetween = (a, b) => Math.round((parseISO(b) - parseISO(a)) / 86400000)
+const addDaysISO = (s, n) => { const d = parseISO(s); d.setUTCDate(d.getUTCDate() + n); return isoOf(d) }
+const todayISO = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' })
+const rangeDates = (start, end) => { const out = []; const n = daysBetween(start, end); for (let i = 0; i <= n; i++) out.push(addDaysISO(start, i)); return out }
+const WD = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+const wdOf = (s) => WD[parseISO(s).getUTCDay()]
+
+// least-squares slope through {x, y} points
+function lsqSlope(pts) {
+  const n = pts.length
+  if (n < 2) return null
+  let sx = 0, sy = 0, sxx = 0, sxy = 0
+  for (const p of pts) { sx += p.x; sy += p.y; sxx += p.x * p.x; sxy += p.x * p.y }
+  const d = n * sxx - sx * sx
+  if (d === 0) return null
+  return (n * sxy - sx * sy) / d
+}
 
 // value of a metric over a set of team-game rows and/or player rows
 function metricValue(key, games, prows) {
@@ -51,8 +77,14 @@ const fmt = (v, unit) => {
   if (unit === 'CS/min') return v.toFixed(1)
   return Math.round(v * 10) / 10
 }
+const axisFmt = (v, unit) => {
+  if (v == null) return ''
+  if (unit === '%') return `${Math.round(v)}%`
+  if (unit === 'gold') return Math.round(v)
+  return Math.round(v * 10) / 10
+}
 const fmtDelta = (d, unit) => {
-  if (d == null) return null
+  if (d == null) return '—'
   const s = d > 0 ? '+' : ''
   if (unit === '%') return `${s}${Math.round(d)}%`
   if (unit === 'gold') return `${s}${Math.round(d)}`
@@ -61,200 +93,308 @@ const fmtDelta = (d, unit) => {
 }
 const LBL = { fontSize: 11, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '.04em' }
 
-// Colours for the four marked elements
-const C_START = '#8a91a0'   // A — where we started (grey dashed)
-const C_TARGET = '#c9a227'  // B — where we need to get to (gold dashed)
-const C_TREND = '#4c8bf5'   // C — the trend (day average, thick blue)
-const C_GAME = '#2dd4bf'    // D — each individual game (thin teal)
-
-function Sparkline({ gameSeries, daySeries, target, baseline, unit }) {
-  const gvals = (gameSeries || []).map((p) => p.value).filter((x) => x != null)
-  const dvals = (daySeries || []).map((p) => p.value).filter((x) => x != null)
-  if (gvals.length < 2) return <span style={{ color: 'var(--text-faint)', fontSize: 11 }}>Not enough games yet — the lines fill in as you sync each day.</span>
-
-  const refs = [target, baseline].filter((x) => x != null)
-  const all = [...gvals, ...dvals, ...refs]
-  const min = Math.min(...all), max = Math.max(...all)
-  const pad = (max - min) * 0.14 || Math.abs(max) * 0.14 || 1
+// =====================================================================
+// DM Performance Visualization Graph
+//   A = start (avg on the start date)   B = target
+//   C = trend (best-fit direction, solid to today, dashed projection to end)
+//   D = each individual game
+//   x-axis = the dates from start to end · y-axis = the metric's numbers
+// =====================================================================
+function DmGraph({ model, unit }) {
+  const { start, end, today, totalDays, startVal, target, slope, dayData, gameData } = model
+  const allVals = [
+    ...gameData.map((g) => g.value),
+    ...dayData.map((d) => d.value),
+    startVal, target,
+    slope != null && startVal != null ? startVal + slope * totalDays : null,
+  ].filter((x) => x != null)
+  if (allVals.length < 1) {
+    return <span style={{ color: 'var(--text-faint)', fontSize: 11 }}>No scrims in this window yet — the graph fills in as you sync each day.</span>
+  }
+  const min = Math.min(...allVals), max = Math.max(...allVals)
+  const pad = (max - min) * 0.16 || Math.abs(max) * 0.16 || 1
   const lo = min - pad, hi = max + pad
 
-  const W = 1000, H = 128
-  const maxX = Math.max(1, ...gameSeries.map((p) => p.x))
-  const px = (x) => (x / maxX) * W
+  const W = 1000, H = 150
+  const px = (dayNum) => (dayNum / totalDays) * W
+  const pxDate = (d) => px(daysBetween(start, d))
   const y = (v) => H - ((v - lo) / (hi - lo)) * H
-  const line = (pts) => pts.filter((p) => p.value != null)
-    .map((p, i) => `${i === 0 ? 'M' : 'L'}${px(p.x).toFixed(1)},${y(p.value).toFixed(1)}`).join(' ')
+  const pctTop = (v) => (1 - (v - lo) / (hi - lo)) * 100
+  const pctLeft = (dayNum) => (dayNum / totalDays) * 100
 
-  const gamePath = line(gameSeries)
-  const dayPath = line(daySeries)
-  const lastDay = [...daySeries].reverse().find((p) => p.value != null)
+  const dayWidth = W / totalDays
+  const todayDayNum = Math.max(0, Math.min(totalDays, daysBetween(start, today)))
+
+  // C — trend line anchored at the start value, using the least-squares slope.
+  const trend = (dn) => startVal + slope * dn
+  const trendSolid = slope != null && startVal != null
+    ? `M${px(0).toFixed(1)},${y(trend(0)).toFixed(1)} L${px(todayDayNum).toFixed(1)},${y(trend(todayDayNum)).toFixed(1)}` : null
+  const trendProj = slope != null && startVal != null && todayDayNum < totalDays
+    ? `M${px(todayDayNum).toFixed(1)},${y(trend(todayDayNum)).toFixed(1)} L${px(totalDays).toFixed(1)},${y(trend(totalDays)).toFixed(1)}` : null
+
+  // D — each game (nudged within its day so a day's sequence reads left→right)
+  const gPts = gameData.map((g) => {
+    const base = pxDate(g.date)
+    const frac = g.dayCount > 1 ? (g.idxInDay / (g.dayCount - 1)) : 0.5
+    return { x: base + frac * dayWidth * 0.6, value: g.value }
+  }).filter((p) => p.value != null)
+  const gamePath = gPts.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${y(p.value).toFixed(1)}`).join(' ')
+
+  // day-average markers
+  const dPts = dayData.map((d) => ({ x: pxDate(d.date) + dayWidth * 0.3, value: d.value })).filter((p) => p.value != null)
+
+  const yticks = [0, 1, 2, 3, 4].map((i) => lo + ((hi - lo) * i) / 4)
+  const dateList = rangeDates(start, end)
+  const showEvery = dateList.length > 12 ? Math.ceil(dateList.length / 12) : 1
 
   const leg = { display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--text-faint)' }
   const bar = (style) => <span style={{ display: 'inline-block', width: 16, verticalAlign: 'middle', ...style }} />
+
   return (
     <div>
-      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 11, marginBottom: 6 }}>
-        {baseline != null && <span style={leg}>{bar({ borderTop: `2px dashed ${C_START}` })} <b style={{ color: 'var(--text-faint)' }}>A</b> Start {fmt(baseline, unit)}</span>}
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 11, marginBottom: 8 }}>
+        {startVal != null && <span style={leg}>{bar({ borderTop: `2px dashed ${C_START}` })} <b style={{ color: 'var(--text-faint)' }}>A</b> Start {fmt(startVal, unit)}</span>}
         {target != null && <span style={leg}>{bar({ borderTop: `2px dashed ${C_TARGET}` })} <b style={{ color: 'var(--text-faint)' }}>B</b> Target {fmt(target, unit)}</span>}
-        <span style={leg}>{bar({ borderTop: `3px solid ${C_TREND}` })} <b style={{ color: 'var(--text-faint)' }}>C</b> Trend (day avg)</span>
+        <span style={leg}>{bar({ borderTop: `3px solid ${C_TREND}` })} <b style={{ color: 'var(--text-faint)' }}>C</b> Trend</span>
+        <span style={leg}>{bar({ borderTop: `2px dashed ${C_TREND}`, opacity: 0.8 })} projection to game day</span>
         <span style={leg}>{bar({ borderTop: `2px solid ${C_GAME}` })} <b style={{ color: 'var(--text-faint)' }}>D</b> Each game</span>
       </div>
-      <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ display: 'block', overflow: 'visible' }}>
-        {/* A — start */}
-        {baseline != null && <line x1="0" y1={y(baseline)} x2={W} y2={y(baseline)} stroke={C_START} strokeWidth="1.5" strokeDasharray="2 7" opacity="0.85" vectorEffect="non-scaling-stroke" />}
-        {/* B — target */}
-        {target != null && <line x1="0" y1={y(target)} x2={W} y2={y(target)} stroke={C_TARGET} strokeWidth="2" strokeDasharray="9 5" opacity="0.95" vectorEffect="non-scaling-stroke" />}
-        {/* D — each game (thin, drawn under the trend) */}
-        <path d={gamePath} fill="none" stroke={C_GAME} strokeWidth="1.5" opacity="0.7" vectorEffect="non-scaling-stroke" />
-        {gameSeries.map((p, i) => p.value != null && (
-          <circle key={`g${i}`} cx={px(p.x)} cy={y(p.value)} r={2} fill={C_GAME} opacity="0.8" vectorEffect="non-scaling-stroke" />
-        ))}
-        {/* C — day-average trend (thick, on top) */}
-        <path d={dayPath} fill="none" stroke={C_TREND} strokeWidth="2.5" vectorEffect="non-scaling-stroke" />
-        {daySeries.map((p, i) => p.value != null && (
-          <circle key={`d${i}`} cx={px(p.x)} cy={y(p.value)} r={lastDay && p === lastDay ? 4.5 : 3} fill={C_TREND} vectorEffect="non-scaling-stroke" />
-        ))}
-      </svg>
+
+      <div style={{ display: 'flex' }}>
+        {/* y-axis — the metric's numbers */}
+        <div style={{ position: 'relative', width: 46, minHeight: H }}>
+          {yticks.map((v, i) => (
+            <span key={i} style={{ position: 'absolute', right: 6, top: `calc(${pctTop(v)}% - 7px)`, fontSize: 10, color: 'var(--text-faint)' }}>{axisFmt(v, unit)}</span>
+          ))}
+        </div>
+
+        {/* plot area */}
+        <div style={{ position: 'relative', flex: 1 }}>
+          <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ display: 'block', overflow: 'visible' }}>
+            {yticks.map((v, i) => <line key={i} x1="0" y1={y(v)} x2={W} y2={y(v)} stroke="var(--border, #2b2b33)" strokeWidth="1" opacity="0.5" vectorEffect="non-scaling-stroke" />)}
+            {/* today marker */}
+            <line x1={px(todayDayNum)} y1="0" x2={px(todayDayNum)} y2={H} stroke={C_TODAY} strokeWidth="1" strokeDasharray="3 4" opacity="0.6" vectorEffect="non-scaling-stroke" />
+            {/* A — start */}
+            {startVal != null && <line x1="0" y1={y(startVal)} x2={W} y2={y(startVal)} stroke={C_START} strokeWidth="1.5" strokeDasharray="2 7" opacity="0.85" vectorEffect="non-scaling-stroke" />}
+            {/* B — target */}
+            {target != null && <line x1="0" y1={y(target)} x2={W} y2={y(target)} stroke={C_TARGET} strokeWidth="2" strokeDasharray="9 5" opacity="0.95" vectorEffect="non-scaling-stroke" />}
+            {/* D — each game */}
+            <path d={gamePath} fill="none" stroke={C_GAME} strokeWidth="1.5" opacity="0.55" vectorEffect="non-scaling-stroke" />
+            {gPts.map((p, i) => <circle key={`g${i}`} cx={p.x} cy={y(p.value)} r={2} fill={C_GAME} opacity="0.8" vectorEffect="non-scaling-stroke" />)}
+            {/* day-average markers */}
+            {dPts.map((p, i) => <circle key={`d${i}`} cx={p.x} cy={y(p.value)} r={2.5} fill={C_TREND} opacity="0.5" vectorEffect="non-scaling-stroke" />)}
+            {/* C — trend + projection */}
+            {trendSolid && <path d={trendSolid} fill="none" stroke={C_TREND} strokeWidth="2.5" vectorEffect="non-scaling-stroke" />}
+            {trendProj && <path d={trendProj} fill="none" stroke={C_TREND} strokeWidth="2.5" strokeDasharray="7 5" opacity="0.85" vectorEffect="non-scaling-stroke" />}
+          </svg>
+
+          {/* today label */}
+          <span style={{ position: 'absolute', top: -2, left: `calc(${pctLeft(todayDayNum)}% - 2px)`, transform: 'translateX(-50%)', fontSize: 9, color: C_TODAY, whiteSpace: 'nowrap' }}>today</span>
+
+          {/* x-axis — the dates */}
+          <div style={{ position: 'relative', height: 26, marginTop: 2 }}>
+            {dateList.map((d, i) => {
+              if (i % showEvery !== 0 && d !== end) return null
+              const isEnd = d === end
+              return (
+                <span key={d} style={{ position: 'absolute', left: `${pctLeft(daysBetween(start, d))}%`, transform: 'translateX(-50%)', fontSize: 9, textAlign: 'center', color: isEnd ? C_TARGET : 'var(--text-faint)', whiteSpace: 'nowrap', lineHeight: 1.15 }}>
+                  {wdOf(d)}<br />{d.slice(5)}{isEnd ? ' ★' : ''}
+                </span>
+              )
+            })}
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
 
-function GoalCard({ goal, lib, series, games, prows }) {
+function DateField({ label, value, onChange }) {
+  return (
+    <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+      <span style={{ ...LBL, fontSize: 10 }}>{label}</span>
+      <input type="date" value={value || ''} onChange={(e) => onChange(e.target.value)}
+        style={{ background: 'var(--panel, #10131a)', color: 'var(--text)', border: '1px solid var(--border, #2b2b33)', borderRadius: 6, padding: '5px 7px', fontSize: 12, colorScheme: 'dark' }} />
+    </label>
+  )
+}
+
+function GoalCard({ goal, lib, series, games, prows, opponent, onSaveDates }) {
   const meta = lib[goal.metric_key] || {}
   const unit = meta.unit
   const higher = meta.higher_is_better !== false
-  // "laners_*" goals aggregate all Sentinels except the support (Huhi)
   const isLaners = (goal.metric_key || '').startsWith('laners_')
   const playersForDay = (ids) => isLaners
     ? prows.filter((p) => p.player !== 'Huhi' && ids.has(p.game_id))
     : goal.scope === 'player' ? prows.filter((p) => p.player === goal.player && ids.has(p.game_id)) : []
 
-  // recent scrim days (enriched), ascending
-  const days = useMemo(() => {
-    const dateSet = new Set()
-    for (const g of games) {
+  const start = goal.trend_start_date
+  const end = goal.trend_end_date
+  const today = todayISO()
+
+  const model = useMemo(() => {
+    if (!start || !end) return null
+    const totalDays = Math.max(1, daysBetween(start, end))
+    const capEnd = today < end ? today : end
+
+    // completed scrim games inside [start, capEnd], with their date
+    const inWin = games.map((g) => {
       const s = series[g.grid_series_id]
-      if (s && s.series_type === 'SCRIM' && g.riot_enriched && g.game_duration_s >= MIN_REAL_GAME_S) dateSet.add(s.series_date)
-    }
-    return [...dateSet].sort().slice(-WINDOW_DAYS)
-  }, [games, series])
+      if (!s || s.series_type !== 'SCRIM' || !g.riot_enriched || g.game_duration_s < MIN_REAL_GAME_S) return null
+      const d = s.series_date
+      if (d < start || d > capEnd) return null
+      return { g, date: d }
+    }).filter(Boolean)
+      .sort((a, b) => a.date !== b.date ? a.date.localeCompare(b.date)
+        : a.g.grid_series_id !== b.g.grid_series_id ? String(a.g.grid_series_id).localeCompare(String(b.g.grid_series_id))
+          : (a.g.game_number ?? 0) - (b.g.game_number ?? 0))
 
-  const points = useMemo(() => days.map((date) => {
-    const dayGames = games.filter((g) => { const s = series[g.grid_series_id]; return s && s.series_date === date && s.series_type === 'SCRIM' && g.riot_enriched && g.game_duration_s >= MIN_REAL_GAME_S })
-    const dayGameIds = new Set(dayGames.map((g) => g.id))
-    const dayPlayer = playersForDay(dayGameIds)
-    return { date, value: metricValue(goal.metric_key, dayGames, dayPlayer) }
-  }), [days, games, series, prows, goal])
-
-  // two trend series on a shared x-axis: D = each game, C = the day's average
-  const trend = useMemo(() => {
-    const gs = games.filter((g) => { const s = series[g.grid_series_id]; return s && s.series_type === 'SCRIM' && g.riot_enriched && g.game_duration_s >= MIN_REAL_GAME_S && days.includes(s.series_date) })
-      .sort((a, b) => {
-        const sa = series[a.grid_series_id], sb = series[b.grid_series_id]
-        if (sa.series_date !== sb.series_date) return sa.series_date.localeCompare(sb.series_date)
-        if (a.grid_series_id !== b.grid_series_id) return String(a.grid_series_id).localeCompare(String(b.grid_series_id))
-        return (a.game_number ?? 0) - (b.game_number ?? 0)
-      })
-    const gameSeries = gs.map((g, i) => ({ x: i, value: metricValue(goal.metric_key, [g], playersForDay(new Set([g.id]))) }))
+    // group by day
     const byDay = {}
-    gs.forEach((g, i) => { const d = series[g.grid_series_id].series_date; (byDay[d] ??= []).push(i) })
-    const daySeries = Object.values(byDay).map((idxs) => {
-      const dayGames = idxs.map((i) => gs[i])
-      const value = metricValue(goal.metric_key, dayGames, playersForDay(new Set(dayGames.map((g) => g.id))))
-      const x = idxs.reduce((a, b) => a + b, 0) / idxs.length
-      return { x, value }
-    }).sort((a, b) => a.x - b.x)
-    return { gameSeries, daySeries }
-  }, [days, games, series, prows, goal])
+    for (const it of inWin) (byDay[it.date] ??= []).push(it.g)
+    const dayData = Object.keys(byDay).sort().map((date) => {
+      const dg = byDay[date]
+      return { date, value: metricValue(goal.metric_key, dg, playersForDay(new Set(dg.map((g) => g.id)))) }
+    }).filter((d) => d.value != null)
 
-  const withVals = points.filter((p) => p.value != null)
-  const latest = withVals.length ? withVals[withVals.length - 1].value : null
-  const prev = withVals.length > 1 ? withVals[withVals.length - 2].value : null
-  const latestDate = withVals.length ? withVals[withVals.length - 1].date : null
-  const prevDate = withVals.length > 1 ? withVals[withVals.length - 2].date : null
-  const delta = latest != null && prev != null ? latest - prev : null
+    // each game, with its position within the day
+    const gameData = inWin.map((it) => {
+      const dg = byDay[it.date]
+      const idxInDay = dg.indexOf(it.g)
+      return { date: it.date, idxInDay, dayCount: dg.length, value: metricValue(goal.metric_key, [it.g], playersForDay(new Set([it.g.id]))) }
+    })
 
-  // week-to-date: metric over all window games at once
-  const wtd = useMemo(() => {
-    const winGames = games.filter((g) => { const s = series[g.grid_series_id]; return s && days.includes(s.series_date) && s.series_type === 'SCRIM' && g.riot_enriched && g.game_duration_s >= MIN_REAL_GAME_S })
-    const winIds = new Set(winGames.map((g) => g.id))
-    const winPlayer = playersForDay(winIds)
-    return metricValue(goal.metric_key, winGames, winPlayer)
-  }, [games, series, days, prows, goal])
+    // A = average on the start date, else the earliest day with data
+    const startPoint = dayData.find((d) => d.date === start) || dayData[0] || null
+    const startVal = startPoint ? startPoint.value : null
 
-  // for team laner goals, find the weakest individual across the window
-  const weakest = useMemo(() => {
-    if (!isLaners) return null
-    const winGames = games.filter((g) => { const s = series[g.grid_series_id]; return s && days.includes(s.series_date) && s.series_type === 'SCRIM' && g.riot_enriched && g.game_duration_s >= MIN_REAL_GAME_S })
-    const winIds = new Set(winGames.map((g) => g.id))
-    const per = ['Impact', 'HamBak', 'DARKWINGS', 'Rahel']
-      .map((pl) => ({ player: pl, value: metricValue(goal.metric_key, [], prows.filter((p) => p.player === pl && winIds.has(p.game_id))) }))
-      .filter((x) => x.value != null)
-    if (!per.length) return null
-    return per.reduce((a, b) => (b.value < a.value ? b : a))
-  }, [isLaners, games, series, days, prows, goal])
+    // C = least-squares slope through the day averages (x = days since start)
+    const slope = lsqSlope(dayData.map((d) => ({ x: daysBetween(start, d.date), y: d.value })))
+
+    return { start, end, today, totalDays, startVal, target: Number(goal.target_value), slope, dayData, gameData }
+  }, [start, end, today, games, series, prows, goal])
 
   const target = Number(goal.target_value)
-  const onTrack = wtd != null && (higher ? wtd >= target : wtd <= target)
-  const improving = latest != null && prev != null ? (higher ? latest > prev : latest < prev) : null
-  const trendColor = improving == null ? 'var(--text-faint)' : improving ? '#3fb950' : '#e5534b'
-  const trendArrow = improving == null ? '' : improving ? '▲' : '▼'
+  const startVal = model?.startVal
+  const slope = model?.slope
+  const totalDays = model?.totalDays ?? 1
+  const dayData = model?.dayData ?? []
+
+  const latest = dayData.length ? dayData[dayData.length - 1].value : null
+  const dayNum = Math.min(totalDays, Math.max(0, daysBetween(start, today > end ? end : today))) + 1
+  const projEnd = slope != null && startVal != null ? startVal + slope * totalDays : null
+
+  // classify effectiveness
+  const verdict = useMemo(() => {
+    if (startVal == null) return { key: 'building', color: C_START, text: 'Waiting on the first day of scrims to set the start point.' }
+    if (slope == null || dayData.length < 2) return { key: 'building', color: C_START, text: 'Need another scrim day to read the trend.' }
+    const reqSlope = (target - startVal) / totalDays
+    const ratio = reqSlope !== 0 ? slope / reqSlope : (Math.abs(slope) < 1e-9 ? 1 : -1)
+    const endLbl = `${wdOf(end)} (${end.slice(5)})${opponent ? ` vs ${opponent}` : ''}`
+    if (ratio >= 1) return { key: 'onpace', color: '#3fb950', text: `On pace — projecting ${fmt(projEnd, unit)} by ${endLbl}.` }
+    if (ratio >= 0.1) return { key: 'short', color: '#d8a531', text: `Improving, but short — at this rate ${fmt(projEnd, unit)} by ${endLbl}, under the ${fmt(target, unit)} target.` }
+    if (ratio > -0.1) return { key: 'flat', color: C_START, text: `Flat — no real movement across ${dayData.length} scrim day${dayData.length === 1 ? '' : 's'}. Reps aren't moving the number.` }
+    return { key: 'wrong', color: '#e5534b', text: `Going the wrong way — projecting ${fmt(projEnd, unit)} by ${endLbl}, away from the ${fmt(target, unit)} target.` }
+  }, [startVal, slope, dayData, target, totalDays, end, opponent, projEnd, unit])
+
+  const vsStart = latest != null && startVal != null ? latest - startVal : null
+  const goodDir = vsStart == null ? null : higher ? vsStart >= 0 : vsStart <= 0
 
   return (
     <div style={{ border: '1px solid var(--border, #2b2b33)', borderRadius: 10, padding: 14, background: 'var(--panel-2, #17171d)' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
-        <div style={{ fontWeight: 600, fontSize: 14 }}>
-          {goal.scope === 'player' && <span style={{ color: '#c9a227', marginRight: 6 }}>{goal.player}</span>}
-          {meta.label || goal.metric_key}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, flexWrap: 'wrap' }}>
+        <div>
+          <div style={{ fontWeight: 600, fontSize: 14 }}>
+            {goal.scope === 'player' && <span style={{ color: '#c9a227', marginRight: 6 }}>{goal.player}</span>}
+            {meta.label || goal.metric_key}
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-faint)', margin: '3px 0 2px' }}>{goal.intent}</div>
+          <div style={{ fontSize: 11, color: 'var(--text-faint)', fontStyle: 'italic' }}>Measures: {meta.description || meta.label || goal.metric_key}</div>
         </div>
-        <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 20, background: onTrack ? '#12351f' : '#3a1d1d', color: onTrack ? '#3fb950' : '#e5534b', whiteSpace: 'nowrap' }}>
-          {onTrack ? 'on track' : 'below target'}
-        </span>
-      </div>
-      <div style={{ fontSize: 12, color: 'var(--text-faint)', margin: '3px 0 2px' }}>{goal.intent}</div>
-      <div style={{ fontSize: 11, color: 'var(--text-faint)', margin: '0 0 10px', fontStyle: 'italic' }}>
-        Measures: {meta.description || meta.label || goal.metric_key}
+        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <DateField label="Start" value={start} onChange={(v) => onSaveDates(goal.id, { trend_start_date: v })} />
+          <DateField label="End" value={end} onChange={(v) => onSaveDates(goal.id, { trend_end_date: v })} />
+          <button type="button" onClick={() => onSaveDates(goal.id, { trend_start_date: today })}
+            title="Re-anchor the start to today — a fresh push"
+            style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border, #2b2b33)', background: 'transparent', color: 'var(--text-faint)', fontSize: 11, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+            Reset to today
+          </button>
+        </div>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 16, flexWrap: 'wrap' }}>
+      {/* verdict — the headline effectiveness read */}
+      <div style={{ margin: '12px 0 10px', padding: '8px 12px', borderRadius: 8, background: 'var(--panel, #10131a)', borderLeft: `3px solid ${verdict.color}` }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: verdict.color, textTransform: 'uppercase', letterSpacing: '.03em', marginRight: 8 }}>
+          Day {dayNum} of {totalDays}
+        </span>
+        <span style={{ fontSize: 13, color: 'var(--text)' }}>{verdict.text}</span>
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 16, flexWrap: 'wrap', marginBottom: 10 }}>
         <div>
-          <div style={LBL}>Today{latestDate ? ` · ${latestDate.slice(5)}` : ''}</div>
+          <div style={LBL}>Start{start ? ` · ${start.slice(5)}` : ''}</div>
+          <div style={{ fontSize: 22, fontWeight: 700, color: C_START }}>{fmt(startVal, unit)}</div>
+        </div>
+        <div>
+          <div style={LBL}>Now (day {dayNum})</div>
           <div style={{ fontSize: 26, fontWeight: 700, lineHeight: 1.1 }}>{fmt(latest, unit)}</div>
         </div>
         <div>
-          <div style={LBL}>vs last day{prevDate ? ` (${prevDate.slice(5)})` : ''}</div>
-          <div style={{ fontSize: 20, fontWeight: 700, color: trendColor }}>
-            {delta == null ? <span style={{ color: 'var(--text-faint)' }}>—</span> : <>{trendArrow} {fmtDelta(delta, unit)}</>}
+          <div style={LBL}>vs start</div>
+          <div style={{ fontSize: 20, fontWeight: 700, color: goodDir == null ? 'var(--text-faint)' : goodDir ? '#3fb950' : '#e5534b' }}>
+            {vsStart == null ? '—' : `${goodDir ? '▲' : '▼'} ${fmtDelta(vsStart, unit)}`}
           </div>
         </div>
         <div>
-          <div style={LBL}>Week-to-date</div>
-          <div style={{ fontSize: 18, fontWeight: 600 }}>{fmt(wtd, unit)}</div>
+          <div style={LBL}>Proj. by end</div>
+          <div style={{ fontSize: 20, fontWeight: 600, color: verdict.color }}>{fmt(projEnd, unit)}</div>
         </div>
         <div>
           <div style={LBL}>Target</div>
-          <div style={{ fontSize: 18, fontWeight: 600, color: '#c9a227' }}>{fmt(target, unit)}</div>
-        </div>
-        <div style={{ flex: 1, minWidth: 320 }}>
-          <Sparkline gameSeries={trend.gameSeries} daySeries={trend.daySeries} target={target} baseline={Number(goal.baseline_value)} unit={unit} />
+          <div style={{ fontSize: 20, fontWeight: 600, color: C_TARGET }}>{fmt(target, unit)}</div>
         </div>
       </div>
-      {isLaners && weakest && (
-        <div style={{ marginTop: 10, fontSize: 12, color: 'var(--text-faint)' }}>
-          Weakest link: <span style={{ color: '#e5534b', fontWeight: 700 }}>{weakest.player}</span> at {fmt(weakest.value, unit)}
-        </div>
+
+      {model ? <DmGraph model={model} unit={unit} />
+        : <div style={{ fontSize: 12, color: 'var(--text-faint)' }}>Set a start and end date to draw the graph.</div>}
+
+      {isLaners && (
+        <WeakestLink goal={goal} series={series} games={games} prows={prows} start={start} end={end} today={today} unit={unit} />
       )}
     </div>
   )
 }
 
+function WeakestLink({ goal, series, games, prows, start, end, today, unit }) {
+  const weakest = useMemo(() => {
+    if (!start || !end) return null
+    const capEnd = today < end ? today : end
+    const ids = new Set()
+    for (const g of games) {
+      const s = series[g.grid_series_id]
+      if (s && s.series_type === 'SCRIM' && g.riot_enriched && g.game_duration_s >= MIN_REAL_GAME_S && s.series_date >= start && s.series_date <= capEnd) ids.add(g.id)
+    }
+    const per = ['Impact', 'HamBak', 'DARKWINGS', 'Rahel']
+      .map((pl) => ({ player: pl, value: metricValue(goal.metric_key, [], prows.filter((p) => p.player === pl && ids.has(p.game_id))) }))
+      .filter((x) => x.value != null)
+    if (!per.length) return null
+    return per.reduce((a, b) => (b.value < a.value ? b : a))
+  }, [goal, series, games, prows, start, end, today])
+  if (!weakest) return null
+  return (
+    <div style={{ marginTop: 10, fontSize: 12, color: 'var(--text-faint)' }}>
+      Weakest link: <span style={{ color: '#e5534b', fontWeight: 700 }}>{weakest.player}</span> at {fmt(weakest.value, unit)}
+    </div>
+  )
+}
+
 export default function GoalsTracker() {
-  const { data: goals, loading: goalsLoading } = useSupabaseQuery(
+  const { data: goals, loading: goalsLoading, refetch: refetchGoals } = useSupabaseQuery(
     () => supabase.from('prep_goals').select('*').eq('active', true), []
   )
   const { data: library } = useSupabaseQuery(() => supabase.from('goal_library').select('*'), [])
   const { data: seriesRows } = useSupabaseQuery(
-    () => supabase.from('grid_series').select('grid_series_id, series_date, series_type').gte('series_date', '2026-06-15'), []
+    () => supabase.from('grid_series').select('grid_series_id, series_date, series_type').gte('series_date', '2026-06-01'), []
   )
   const { data: gameRows } = useSupabaseQuery(
     () => fetchAllRows(() => supabase.from('grid_games').select(
@@ -270,7 +410,6 @@ export default function GoalsTracker() {
   const lib = useMemo(() => Object.fromEntries((library || []).map((l) => [l.metric_key, l])), [library])
   const seriesById = useMemo(() => Object.fromEntries((seriesRows || []).map((s) => [s.grid_series_id, s])), [seriesRows])
 
-  // only keep player rows for games in our recent window (cuts the join down)
   const winGameIds = useMemo(() => {
     const ids = new Set()
     for (const g of gameRows || []) if (seriesById[g.grid_series_id]) ids.add(g.id)
@@ -281,12 +420,14 @@ export default function GoalsTracker() {
 
   const ROSTER = ['Impact', 'HamBak', 'DARKWINGS', 'Rahel', 'Huhi']
   const teamGoals = (goals || []).filter((g) => g.scope === 'team')
-  const playerGoals = (goals || []).filter((g) => g.scope === 'player')
-    .sort((a, b) => ROSTER.indexOf(a.player) - ROSTER.indexOf(b.player))
-
   const loading = goalsLoading || !gameRows || !playerRows || !seriesRows
   const cycleOpp = (goals && goals[0]?.cycle_opponent) || null
   const cycleDate = (goals && goals[0]?.cycle_official_date) || null
+
+  async function saveDates(id, patch) {
+    await supabase.from('prep_goals').update(patch).eq('id', id)
+    refetchGoals()
+  }
 
   const [newScope, setNewScope] = useState('team')
   const [newPlayer, setNewPlayer] = useState('Impact')
@@ -312,7 +453,7 @@ export default function GoalsTracker() {
       <h2>Team Goals</h2>
       <p className="panel-caption">
         Team-wide SMART targets for the prep week{cycleOpp ? <> — building toward <b style={{ color: 'var(--text)' }}>{cycleOpp}</b>{cycleDate ? ` (${cycleDate})` : ''}</> : ''}.
-        Measured off the day&apos;s scrims each time you sync. Every graph is marked: <b style={{ color: '#8a91a0' }}>A</b> = where we started, <b style={{ color: '#c9a227' }}>B</b> = the target, <b style={{ color: '#4c8bf5' }}>C</b> = the trend (each day&apos;s average), <b style={{ color: '#2dd4bf' }}>D</b> = every individual game. The blue C line climbing from A toward B is improvement; falling back toward A is decline. ▲ means the latest day moved toward target, ▼ away.
+        Each goal runs on the <b style={{ color: 'var(--text)' }}>DM Performance Visualization Graph</b> between its own start and end dates: <b style={{ color: '#8a91a0' }}>A</b> = where we started (average on the start date), <b style={{ color: '#c9a227' }}>B</b> = the target, <b style={{ color: '#4c8bf5' }}>C</b> = the trend (solid to today, dashed projection to game day), <b style={{ color: '#2dd4bf' }}>D</b> = every individual game. Dates run along the bottom, the metric&apos;s numbers up the side. The verdict tells you if the reps are actually moving the number. Edit a goal&apos;s dates to carry it across weeks or reset it for a fresh push.
       </p>
 
       {loading && <div className="loading-state">Loading goals…</div>}
@@ -322,9 +463,9 @@ export default function GoalsTracker() {
       )}
 
       {!loading && teamGoals.length > 0 && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 14 }}>
           {teamGoals.map((g) => (
-            <GoalCard key={g.id} goal={g} lib={lib} series={seriesById} games={winGames} prows={winPlayerRows} />
+            <GoalCard key={g.id} goal={g} lib={lib} series={seriesById} games={winGames} prows={winPlayerRows} opponent={cycleOpp} onSaveDates={saveDates} />
           ))}
         </div>
       )}
