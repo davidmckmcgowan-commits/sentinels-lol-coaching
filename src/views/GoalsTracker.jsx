@@ -254,36 +254,24 @@ export default function GoalsTracker() {
 
   return (
     <div className="panel">
-      <h2>Goals</h2>
+      <h2>Team Goals</h2>
       <p className="panel-caption">
-        SMART targets for the prep week{cycleOpp ? <> — building toward <b style={{ color: 'var(--text)' }}>{cycleOpp}</b>{cycleDate ? ` (${cycleDate})` : ''}</> : ''}.
+        Team-wide SMART targets for the prep week{cycleOpp ? <> — building toward <b style={{ color: 'var(--text)' }}>{cycleOpp}</b>{cycleDate ? ` (${cycleDate})` : ''}</> : ''}.
         Measured off the day&apos;s scrims each time you sync. ▲ means the latest day moved toward target, ▼ away. Gold dashed line on each spark is the target.
       </p>
 
       {loading && <div className="loading-state">Loading goals…</div>}
 
-      {!loading && (!goals || goals.length === 0) && (
-        <div className="empty-state">No active goals set. Send me the goals for this week and I&apos;ll load them.</div>
+      {!loading && teamGoals.length === 0 && (
+        <div className="empty-state">No active team goals set. Send me the goals for this week and I&apos;ll load them.</div>
       )}
 
-      {!loading && goals && goals.length > 0 && (
-        <>
-          <h3 style={{ marginTop: 4 }}>Team</h3>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 12 }}>
-            {teamGoals.map((g) => (
-              <GoalCard key={g.id} goal={g} lib={lib} series={seriesById} games={winGames} prows={winPlayerRows} />
-            ))}
-          </div>
-
-          <h3 style={{ marginTop: 22 }}>Individual</h3>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 12 }}>
-            {playerGoals
-              .sort((a, b) => (['Impact', 'HamBak', 'DARKWINGS', 'Rahel', 'Huhi'].indexOf(a.player)) - (['Impact', 'HamBak', 'DARKWINGS', 'Rahel', 'Huhi'].indexOf(b.player)))
-              .map((g) => (
-                <GoalCard key={g.id} goal={g} lib={lib} series={seriesById} games={winGames} prows={winPlayerRows} />
-              ))}
-          </div>
-        </>
+      {!loading && teamGoals.length > 0 && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 12 }}>
+          {teamGoals.map((g) => (
+            <GoalCard key={g.id} goal={g} lib={lib} series={seriesById} games={winGames} prows={winPlayerRows} />
+          ))}
+        </div>
       )}
 
       <div style={{ marginTop: 26, borderTop: '1px solid var(--border, #2b2b33)', paddingTop: 18 }}>
