@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../lib/supabaseClient.js'
 import { useSupabaseQuery, fetchAllRows } from '../lib/useSupabaseQuery.js'
 import { canonicalOpponentName } from '../lib/constants.js'
+import DailySync from './DailySync.jsx'
 
 // Champion icons come from Riot's Data Dragon CDN. We fetch the champion list
 // once and build two lookups: championId -> image key (for bans) and
@@ -169,6 +170,8 @@ export default function MatchHistory() {
   const td = { padding: '7px 10px', fontSize: 13, verticalAlign: 'middle', whiteSpace: 'nowrap' }
 
   return (
+    <>
+    <DailySync />
     <div className="panel" style={{ overflowX: 'auto' }}>
       <h2>Match History</h2>
       <p className="panel-caption">
@@ -262,5 +265,6 @@ export default function MatchHistory() {
         </>
       )}
     </div>
+    </>
   )
 }

@@ -10,7 +10,6 @@ import IndividualPlayerPerformance from './views/IndividualPlayerPerformance.jsx
 import Interventions from './views/Interventions.jsx'
 import WinConditions from './views/WinConditions.jsx'
 import GamePrep from './views/GamePrep.jsx'
-import DailySync from './views/DailySync.jsx'
 import MatchHistory from './views/MatchHistory.jsx'
 import GoalsTracker from './views/GoalsTracker.jsx'
 import DailyBriefing from './views/DailyBriefing.jsx'
@@ -24,7 +23,6 @@ const TABS = [
   { key: 'wellbeing', label: 'Player Wellbeing' },
   { key: 'correlation', label: 'Correlation Explorer' },
   { key: 'entry', label: 'Data Entry' },
-  { key: 'dailySync', label: 'Daily Sync' },
   { key: 'sleepDebt', label: 'Sleep Debt Analysis' },
   { key: 'individualPerf', label: 'Player Performance Dashboard' },
   { key: 'winConditions', label: 'Win Conditions' },
@@ -69,7 +67,6 @@ function App() {
         {activeTab === 'wellbeing' && <PlayerWellbeing />}
         {activeTab === 'correlation' && <CorrelationExplorer />}
         {activeTab === 'entry' && <DataEntry />}
-        {activeTab === 'dailySync' && <DailySync />}
         {activeTab === 'sleepDebt' && <SleepDebtAnalysis />}
         {activeTab === 'individualPerf' && <IndividualPlayerPerformance />}
         {activeTab === 'winConditions' && <WinConditions />}
