@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import './App.css'
 import TeamSessionDashboard from './views/TeamSessionDashboard.jsx'
-import OpponentDossier from './views/OpponentDossier.jsx'
+import OpponentStats from './views/OpponentStats.jsx'
 import PlayerWellbeing from './views/PlayerWellbeing.jsx'
 import CorrelationExplorer from './views/CorrelationExplorer.jsx'
 import DataEntry from './views/DataEntry.jsx'
@@ -19,7 +19,7 @@ const TABS = [
   { key: 'briefing', label: 'Daily Briefing' },
   { key: 'goals', label: 'Goals' },
   { key: 'sessions', label: 'Team Session Dashboard' },
-  { key: 'opponents', label: 'Opponent Dossier' },
+  { key: 'opponents', label: 'Opponent Stats' },
   { key: 'wellbeing', label: 'Player Wellbeing' },
   { key: 'correlation', label: 'Correlation Explorer' },
   { key: 'entry', label: 'Data Entry' },
@@ -63,7 +63,7 @@ function App() {
         {activeTab === 'briefing' && <DailyBriefing />}
         {activeTab === 'goals' && <GoalsTracker />}
         {activeTab === 'sessions' && <TeamSessionDashboard />}
-        {activeTab === 'opponents' && <OpponentDossier />}
+        {activeTab === 'opponents' && <OpponentStats />}
         {activeTab === 'wellbeing' && <PlayerWellbeing />}
         {activeTab === 'correlation' && <CorrelationExplorer />}
         {activeTab === 'entry' && <DataEntry />}
