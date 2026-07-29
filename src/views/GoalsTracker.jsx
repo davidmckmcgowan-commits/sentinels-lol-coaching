@@ -61,33 +61,58 @@ const fmtDelta = (d, unit) => {
 }
 const LBL = { fontSize: 11, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '.04em' }
 
-function Sparkline({ points, target, baseline, unit }) {
-  const vals = points.map((p) => p.value).filter((x) => x != null)
-  if (vals.length < 2) return <span style={{ color: 'var(--text-faint)', fontSize: 11 }}>Not enough days yet — the trend line fills in as you sync each day.</span>
+// Colours for the four marked elements
+const C_START = '#8a91a0'   // A — where we started (grey dashed)
+const C_TARGET = '#c9a227'  // B — where we need to get to (gold dashed)
+const C_TREND = '#4c8bf5'   // C — the trend (day average, thick blue)
+const C_GAME = '#2dd4bf'    // D — each individual game (thin teal)
+
+function Sparkline({ gameSeries, daySeries, target, baseline, unit }) {
+  const gvals = (gameSeries || []).map((p) => p.value).filter((x) => x != null)
+  const dvals = (daySeries || []).map((p) => p.value).filter((x) => x != null)
+  if (gvals.length < 2) return <span style={{ color: 'var(--text-faint)', fontSize: 11 }}>Not enough games yet — the lines fill in as you sync each day.</span>
+
   const refs = [target, baseline].filter((x) => x != null)
-  const all = [...vals, ...refs]
+  const all = [...gvals, ...dvals, ...refs]
   const min = Math.min(...all), max = Math.max(...all)
   const pad = (max - min) * 0.14 || Math.abs(max) * 0.14 || 1
   const lo = min - pad, hi = max + pad
-  const W = 1000, H = 118
-  const step = W / (points.length - 1)
+
+  const W = 1000, H = 128
+  const maxX = Math.max(1, ...gameSeries.map((p) => p.x))
+  const px = (x) => (x / maxX) * W
   const y = (v) => H - ((v - lo) / (hi - lo)) * H
-  const path = points.map((p, i) => (p.value == null ? null : `${i === 0 ? 'M' : 'L'}${(i * step).toFixed(1)},${y(p.value).toFixed(1)}`)).filter(Boolean).join(' ')
+  const line = (pts) => pts.filter((p) => p.value != null)
+    .map((p, i) => `${i === 0 ? 'M' : 'L'}${px(p.x).toFixed(1)},${y(p.value).toFixed(1)}`).join(' ')
+
+  const gamePath = line(gameSeries)
+  const dayPath = line(daySeries)
+  const lastDay = [...daySeries].reverse().find((p) => p.value != null)
+
   const leg = { display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--text-faint)' }
   const bar = (style) => <span style={{ display: 'inline-block', width: 16, verticalAlign: 'middle', ...style }} />
   return (
     <div>
-      <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', fontSize: 11, marginBottom: 6 }}>
-        <span style={leg}>{bar({ borderTop: '3px solid #4c8bf5' })} Trend (per game)</span>
-        {target != null && <span style={leg}>{bar({ borderTop: '2px dashed #c9a227' })} Target {fmt(target, unit)}</span>}
-        {baseline != null && <span style={leg}>{bar({ borderTop: '2px dashed #8a91a0' })} Start {fmt(baseline, unit)}</span>}
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 11, marginBottom: 6 }}>
+        {baseline != null && <span style={leg}>{bar({ borderTop: `2px dashed ${C_START}` })} <b style={{ color: 'var(--text-faint)' }}>A</b> Start {fmt(baseline, unit)}</span>}
+        {target != null && <span style={leg}>{bar({ borderTop: `2px dashed ${C_TARGET}` })} <b style={{ color: 'var(--text-faint)' }}>B</b> Target {fmt(target, unit)}</span>}
+        <span style={leg}>{bar({ borderTop: `3px solid ${C_TREND}` })} <b style={{ color: 'var(--text-faint)' }}>C</b> Trend (day avg)</span>
+        <span style={leg}>{bar({ borderTop: `2px solid ${C_GAME}` })} <b style={{ color: 'var(--text-faint)' }}>D</b> Each game</span>
       </div>
       <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ display: 'block', overflow: 'visible' }}>
-        {baseline != null && <line x1="0" y1={y(baseline)} x2={W} y2={y(baseline)} stroke="#8a91a0" strokeWidth="1.5" strokeDasharray="2 7" opacity="0.85" vectorEffect="non-scaling-stroke" />}
-        {target != null && <line x1="0" y1={y(target)} x2={W} y2={y(target)} stroke="#c9a227" strokeWidth="2" strokeDasharray="9 5" opacity="0.95" vectorEffect="non-scaling-stroke" />}
-        <path d={path} fill="none" stroke="#4c8bf5" strokeWidth="2.5" vectorEffect="non-scaling-stroke" />
-        {points.map((p, i) => p.value != null && (
-          <circle key={i} cx={i * step} cy={y(p.value)} r={i === points.length - 1 ? 4.5 : 2.5} fill={i === points.length - 1 ? '#4c8bf5' : '#4c8bf5aa'} vectorEffect="non-scaling-stroke" />
+        {/* A — start */}
+        {baseline != null && <line x1="0" y1={y(baseline)} x2={W} y2={y(baseline)} stroke={C_START} strokeWidth="1.5" strokeDasharray="2 7" opacity="0.85" vectorEffect="non-scaling-stroke" />}
+        {/* B — target */}
+        {target != null && <line x1="0" y1={y(target)} x2={W} y2={y(target)} stroke={C_TARGET} strokeWidth="2" strokeDasharray="9 5" opacity="0.95" vectorEffect="non-scaling-stroke" />}
+        {/* D — each game (thin, drawn under the trend) */}
+        <path d={gamePath} fill="none" stroke={C_GAME} strokeWidth="1.5" opacity="0.7" vectorEffect="non-scaling-stroke" />
+        {gameSeries.map((p, i) => p.value != null && (
+          <circle key={`g${i}`} cx={px(p.x)} cy={y(p.value)} r={2} fill={C_GAME} opacity="0.8" vectorEffect="non-scaling-stroke" />
+        ))}
+        {/* C — day-average trend (thick, on top) */}
+        <path d={dayPath} fill="none" stroke={C_TREND} strokeWidth="2.5" vectorEffect="non-scaling-stroke" />
+        {daySeries.map((p, i) => p.value != null && (
+          <circle key={`d${i}`} cx={px(p.x)} cy={y(p.value)} r={lastDay && p === lastDay ? 4.5 : 3} fill={C_TREND} vectorEffect="non-scaling-stroke" />
         ))}
       </svg>
     </div>
@@ -121,8 +146,8 @@ function GoalCard({ goal, lib, series, games, prows }) {
     return { date, value: metricValue(goal.metric_key, dayGames, dayPlayer) }
   }), [days, games, series, prows, goal])
 
-  // one point per individual game (chronological) for the trend line
-  const gamePoints = useMemo(() => {
+  // two trend series on a shared x-axis: D = each game, C = the day's average
+  const trend = useMemo(() => {
     const gs = games.filter((g) => { const s = series[g.grid_series_id]; return s && s.series_type === 'SCRIM' && g.riot_enriched && g.game_duration_s >= MIN_REAL_GAME_S && days.includes(s.series_date) })
       .sort((a, b) => {
         const sa = series[a.grid_series_id], sb = series[b.grid_series_id]
@@ -130,7 +155,16 @@ function GoalCard({ goal, lib, series, games, prows }) {
         if (a.grid_series_id !== b.grid_series_id) return String(a.grid_series_id).localeCompare(String(b.grid_series_id))
         return (a.game_number ?? 0) - (b.game_number ?? 0)
       })
-    return gs.map((g) => ({ date: series[g.grid_series_id].series_date, value: metricValue(goal.metric_key, [g], playersForDay(new Set([g.id]))) }))
+    const gameSeries = gs.map((g, i) => ({ x: i, value: metricValue(goal.metric_key, [g], playersForDay(new Set([g.id]))) }))
+    const byDay = {}
+    gs.forEach((g, i) => { const d = series[g.grid_series_id].series_date; (byDay[d] ??= []).push(i) })
+    const daySeries = Object.values(byDay).map((idxs) => {
+      const dayGames = idxs.map((i) => gs[i])
+      const value = metricValue(goal.metric_key, dayGames, playersForDay(new Set(dayGames.map((g) => g.id))))
+      const x = idxs.reduce((a, b) => a + b, 0) / idxs.length
+      return { x, value }
+    }).sort((a, b) => a.x - b.x)
+    return { gameSeries, daySeries }
   }, [days, games, series, prows, goal])
 
   const withVals = points.filter((p) => p.value != null)
@@ -202,7 +236,7 @@ function GoalCard({ goal, lib, series, games, prows }) {
           <div style={{ fontSize: 18, fontWeight: 600, color: '#c9a227' }}>{fmt(target, unit)}</div>
         </div>
         <div style={{ flex: 1, minWidth: 320 }}>
-          <Sparkline points={gamePoints} target={target} baseline={Number(goal.baseline_value)} unit={unit} />
+          <Sparkline gameSeries={trend.gameSeries} daySeries={trend.daySeries} target={target} baseline={Number(goal.baseline_value)} unit={unit} />
         </div>
       </div>
       {isLaners && weakest && (
@@ -278,7 +312,7 @@ export default function GoalsTracker() {
       <h2>Team Goals</h2>
       <p className="panel-caption">
         Team-wide SMART targets for the prep week{cycleOpp ? <> — building toward <b style={{ color: 'var(--text)' }}>{cycleOpp}</b>{cycleDate ? ` (${cycleDate})` : ''}</> : ''}.
-        Measured off the day&apos;s scrims each time you sync. Each graph shows the daily <b style={{ color: '#4c8bf5' }}>trend</b> between where we <b style={{ color: '#8a91a0' }}>started</b> (grey dashed) and the <b style={{ color: '#c9a227' }}>target</b> (gold dashed) — climbing toward the gold line is improvement. ▲ means the latest day moved toward target, ▼ away.
+        Measured off the day&apos;s scrims each time you sync. Every graph is marked: <b style={{ color: '#8a91a0' }}>A</b> = where we started, <b style={{ color: '#c9a227' }}>B</b> = the target, <b style={{ color: '#4c8bf5' }}>C</b> = the trend (each day&apos;s average), <b style={{ color: '#2dd4bf' }}>D</b> = every individual game. The blue C line climbing from A toward B is improvement; falling back toward A is decline. ▲ means the latest day moved toward target, ▼ away.
       </p>
 
       {loading && <div className="loading-state">Loading goals…</div>}
