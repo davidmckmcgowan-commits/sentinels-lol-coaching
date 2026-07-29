@@ -67,16 +67,16 @@ function Sparkline({ points, target }) {
   const all = [...vals, target]
   const min = Math.min(...all), max = Math.max(...all)
   const span = max - min || 1
-  const W = 150, H = 34
+  const W = 1000, H = 90
   const step = W / (points.length - 1)
-  const y = (v) => H - ((v - min) / span) * (H - 6) - 3
+  const y = (v) => H - ((v - min) / span) * (H - 16) - 8
   const path = points.map((p, i) => (p.value == null ? null : `${i === 0 ? 'M' : 'L'}${(i * step).toFixed(1)},${y(p.value).toFixed(1)}`)).filter(Boolean).join(' ')
   return (
-    <svg width={W} height={H} style={{ overflow: 'visible' }}>
-      <line x1="0" y1={y(target)} x2={W} y2={y(target)} stroke="#c9a227" strokeWidth="1" strokeDasharray="3 3" opacity="0.7" />
-      <path d={path} fill="none" stroke="#4c8bf5" strokeWidth="2" />
+    <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ display: 'block', overflow: 'visible' }}>
+      <line x1="0" y1={y(target)} x2={W} y2={y(target)} stroke="#c9a227" strokeWidth="1.5" strokeDasharray="6 6" opacity="0.7" vectorEffect="non-scaling-stroke" />
+      <path d={path} fill="none" stroke="#4c8bf5" strokeWidth="2.5" vectorEffect="non-scaling-stroke" />
       {points.map((p, i) => p.value != null && (
-        <circle key={i} cx={i * step} cy={y(p.value)} r={i === points.length - 1 ? 3.5 : 2} fill={i === points.length - 1 ? '#4c8bf5' : '#4c8bf5aa'} />
+        <circle key={i} cx={i * step} cy={y(p.value)} r={i === points.length - 1 ? 4 : 2.5} fill={i === points.length - 1 ? '#4c8bf5' : '#4c8bf5aa'} vectorEffect="non-scaling-stroke" />
       ))}
     </svg>
   )
@@ -177,7 +177,7 @@ function GoalCard({ goal, lib, series, games, prows }) {
           <div style={LBL}>Target</div>
           <div style={{ fontSize: 18, fontWeight: 600, color: '#c9a227' }}>{fmt(target, unit)}</div>
         </div>
-        <div style={{ marginLeft: 'auto' }}>
+        <div style={{ flex: 1, minWidth: 320 }}>
           <Sparkline points={points} target={target} />
           <div style={{ fontSize: 10, color: 'var(--text-faint)', textAlign: 'right' }}>
             baseline {fmt(Number(goal.baseline_value), unit)}
@@ -267,7 +267,7 @@ export default function GoalsTracker() {
       )}
 
       {!loading && teamGoals.length > 0 && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 12 }}>
           {teamGoals.map((g) => (
             <GoalCard key={g.id} goal={g} lib={lib} series={seriesById} games={winGames} prows={winPlayerRows} />
           ))}
