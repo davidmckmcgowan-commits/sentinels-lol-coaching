@@ -6,19 +6,17 @@ import { canonicalOpponentName, ROSTER_PLAYERS } from '../lib/constants.js'
 const MIN_REAL_S = 900
 
 const METRICS = [
-  { key: 'cs_per_min', label: 'CS per min', get: (p) => p.cs_per_min, fmt: (v) => v.toFixed(1) },
-  { key: 'kda', label: 'KDA', get: (p) => (p.deaths ? ((p.kills ?? 0) + (p.assists ?? 0)) / p.deaths : (p.kills ?? 0) + (p.assists ?? 0)), fmt: (v) => v.toFixed(1) },
-  { key: 'kill_participation', label: 'Kill participation', get: (p) => p.kill_participation, fmt: (v) => `${Math.round(v)}%` },
-  { key: 'champ_damage_share', label: 'Damage share', get: (p) => p.champ_damage_share, fmt: (v) => `${Math.round(v)}%` },
-  { key: 'gold_diff_15', label: 'Gold diff @15', get: (p) => p.gold_diff_15, fmt: (v) => (v > 0 ? '+' : '') + Math.round(v) },
-  { key: 'cs_diff_15', label: 'CS diff @15', get: (p) => p.cs_diff_15, fmt: (v) => (v > 0 ? '+' : '') + v.toFixed(1) },
-  { key: 'vision_per_min', label: 'Vision / min', get: (p) => p.vision_per_min, fmt: (v) => v.toFixed(2) },
+  { key: 'cs_per_min', label: 'CS per min', get: (p) => p.cs_per_min, fmt: (v) => v.toFixed(1), dp: 1 },
+  { key: 'kda', label: 'KDA', get: (p) => (p.deaths ? ((p.kills ?? 0) + (p.assists ?? 0)) / p.deaths : (p.kills ?? 0) + (p.assists ?? 0)), fmt: (v) => v.toFixed(1), dp: 1 },
+  { key: 'kill_participation', label: 'Kill participation', get: (p) => p.kill_participation, fmt: (v) => `${Math.round(v)}%`, pct: true },
+  { key: 'champ_damage_share', label: 'Damage share', get: (p) => p.champ_damage_share, fmt: (v) => `${Math.round(v)}%`, pct: true },
+  { key: 'gold_diff_15', label: 'Gold diff @15', get: (p) => p.gold_diff_15, fmt: (v) => (v > 0 ? '+' : '') + Math.round(v), dp: 0 },
+  { key: 'cs_diff_15', label: 'CS diff @15', get: (p) => p.cs_diff_15, fmt: (v) => (v > 0 ? '+' : '') + v.toFixed(1), dp: 1 },
+  { key: 'vision_per_min', label: 'Vision / min', get: (p) => p.vision_per_min, fmt: (v) => v.toFixed(2), dp: 2 },
 ]
 
 const COL_TEAM = '#4c8bf5'
-const COL_FIELD = '#8a91a0'
 
-// percentile of a value array (not necessarily sorted); q in [0,1]
 function quantile(vals, qq) {
   const a = vals.slice().sort((x, y) => x - y)
   if (!a.length) return null
@@ -28,50 +26,6 @@ function quantile(vals, qq) {
   return a[b + 1] !== undefined ? a[b] + r * (a[b + 1] - a[b]) : a[b]
 }
 const box = (vals) => (vals.length ? { p25: quantile(vals, 0.25), p50: quantile(vals, 0.5), p75: quantile(vals, 0.75), n: vals.length } : { p25: null, p50: null, p75: null, n: 0 })
-
-// ---- box-plot SVG (25th–median–75th) ----
-const VW = 700, VH = 340, PX0 = 52, PX1 = 686, PY0 = 20, PY1 = 286
-function BoxPlot({ cols, fmt, teamName }) {
-  const withData = cols.filter((c) => c.b.p25 != null)
-  const lo = Math.min(...withData.map((c) => c.b.p25))
-  const hi = Math.max(...withData.map((c) => c.b.p75))
-  const pad = (hi - lo) * 0.15 || Math.abs(hi) * 0.15 || 1
-  let min = lo - pad, max = hi + pad
-  if (min > 0) min = Math.min(0, min) // show zero baseline when all positive-ish for diffs
-  const y = (v) => PY1 - ((v - min) / (max - min)) * (PY1 - PY0)
-  const halfW = 30
-  const ticks = [min, (min + max) / 2, max]
-  return (
-    <svg viewBox={`0 0 ${VW} ${VH}`} width="100%" style={{ maxHeight: 360 }}>
-      {ticks.map((t, i) => (
-        <g key={i}>
-          <line x1={PX0} y1={y(t)} x2={PX1} y2={y(t)} stroke="#2a2f3a" strokeDasharray="3 3" />
-          <text x={PX0 - 8} y={y(t) + 4} textAnchor="end" fontSize="11" fill="#9aa1ae">{fmt(t)}</text>
-        </g>
-      ))}
-      {min < 0 && max > 0 && <line x1={PX0} y1={y(0)} x2={PX1} y2={y(0)} stroke="#4b5563" />}
-      {cols.map((c) => {
-        const cx = PX0 + c.fx * (PX1 - PX0)
-        if (c.b.p25 == null) {
-          return <text key={c.key} x={cx} y={(PY0 + PY1) / 2} textAnchor="middle" fontSize="11" fill="#6b7280">no games</text>
-        }
-        const yTop = y(c.b.p75), yBot = y(c.b.p25), yMed = y(c.b.p50)
-        return (
-          <g key={c.key}>
-            <rect x={cx - halfW} y={yTop} width={halfW * 2} height={Math.max(2, yBot - yTop)} rx="3" fill={`${c.color}33`} stroke={c.color} strokeWidth="1.5" />
-            <line x1={cx - halfW} y1={yMed} x2={cx + halfW} y2={yMed} stroke={c.color} strokeWidth="3" />
-            <text x={cx + halfW + 6} y={yMed + 4} fontSize="12" fontWeight="700" fill="#e6e8ec">{fmt(c.b.p50)}</text>
-            <text x={cx} y={PY1 + 18} textAnchor="middle" fontSize="11" fill="#c9ced8">{c.label}</text>
-            <text x={cx} y={PY1 + 32} textAnchor="middle" fontSize="10" fill="#6b7280">{c.b.n} games</text>
-          </g>
-        )
-      })}
-      {/* group labels */}
-      <text x={PX0 + 0.22 * (PX1 - PX0)} y={VH - 6} textAnchor="middle" fontSize="12" fontWeight="700" fill="#9aa1ae">SCRIMS</text>
-      <text x={PX0 + 0.72 * (PX1 - PX0)} y={VH - 6} textAnchor="middle" fontSize="12" fontWeight="700" fill="#9aa1ae">OFFICIALS</text>
-    </svg>
-  )
-}
 
 export default function PlayerCompare() {
   const { data: series } = useSupabaseQuery(() => supabase.from('grid_series').select('grid_series_id, opponent_name, series_type'), [])
@@ -111,7 +65,7 @@ export default function PlayerCompare() {
   const selTeam = team || (opps[0]?.name ?? null)
   const metric = METRICS.find((m) => m.key === metricKey)
 
-  const cols = useMemo(() => {
+  const rows = useMemo(() => {
     if (!selTeam || !metric) return null
     const buk = { SCRIM: { team: [], field: [] }, ESPORTS: { team: [], field: [] } }
     for (const p of prows || []) {
@@ -125,14 +79,32 @@ export default function PlayerCompare() {
       ;(meta.opp === selTeam ? b.team : b.field).push(v)
     }
     return [
-      { key: 'st', label: `vs ${selTeam}`, color: COL_TEAM, fx: 0.14, b: box(buk.SCRIM.team) },
-      { key: 'sf', label: 'vs field', color: COL_FIELD, fx: 0.30, b: box(buk.SCRIM.field) },
-      { key: 'ot', label: `vs ${selTeam}`, color: COL_TEAM, fx: 0.64, b: box(buk.ESPORTS.team) },
-      { key: 'of', label: 'vs field', color: COL_FIELD, fx: 0.80, b: box(buk.ESPORTS.field) },
+      { name: 'Scrims', team: box(buk.SCRIM.team), field: box(buk.SCRIM.field) },
+      { name: 'Officials', team: box(buk.ESPORTS.team), field: box(buk.ESPORTS.field) },
     ]
   }, [prows, gameMeta, player, selTeam, metric])
 
-  const anyData = cols && cols.some((c) => c.b.p25 != null)
+  const anyData = rows && rows.some((r) => r.team.p50 != null || r.field.p50 != null)
+  const dstr = (d) => {
+    const s = d > 0 ? '+' : d < 0 ? '−' : ''
+    const a = Math.abs(d)
+    return s + (metric.pct ? `${Math.round(a)}%` : a.toFixed(metric.dp))
+  }
+
+  const th = { textAlign: 'left', padding: '8px 12px', fontSize: 11, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '.04em', borderBottom: '1px solid var(--border, #2b2b33)' }
+  const td = { padding: '12px', borderBottom: '1px solid var(--border, #2b2b33)', verticalAlign: 'middle' }
+
+  const Cell = ({ b }) => {
+    if (b.p50 == null) return <span style={{ color: 'var(--text-faint)' }}>no games</span>
+    return (
+      <div>
+        <span style={{ fontSize: 22, fontWeight: 800 }}>{metric.fmt(b.p50)}</span>
+        <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 2 }}>
+          {metric.fmt(b.p25)} – {metric.fmt(b.p75)} · {b.n} games
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="panel">
@@ -162,19 +134,41 @@ export default function PlayerCompare() {
       </div>
 
       <p className="panel-caption" style={{ marginTop: 0 }}>
-        <b style={{ color: 'var(--text)' }}>{player}</b>&rsquo;s <b style={{ color: 'var(--text)' }}>{metric.label}</b> against <b style={{ color: COL_TEAM }}>{selTeam}</b> vs the rest of the field, in scrims and officials.
-        Each box is the middle 50% of games — bottom of the box is the 25th percentile, top is the 75th, the thick line is the median. Completed games only.
+        <b style={{ color: 'var(--text)' }}>{player}</b>&rsquo;s <b style={{ color: 'var(--text)' }}>{metric.label}</b> against <b style={{ color: COL_TEAM }}>{selTeam}</b> vs the rest of the field.
+        Big number is the median; small line is the 25th–75th range and game count. <b>Δ</b> is his median vs that team minus his median vs the field — green means he steps up against them, red means he drops off. Completed games only.
       </p>
 
       {pLoading && <div className="loading-state">Loading…</div>}
       {!pLoading && !anyData && <div className="empty-state">No games on record for {player} yet.</div>}
 
-      {anyData && <BoxPlot cols={cols} fmt={metric.fmt} teamName={selTeam} />}
-
       {anyData && (
-        <div style={{ display: 'flex', gap: 18, marginTop: 8, fontSize: 12, color: 'var(--text-faint)' }}>
-          <span><span style={{ display: 'inline-block', width: 10, height: 10, background: COL_TEAM, borderRadius: 2, marginRight: 5 }} />vs {selTeam}</span>
-          <span><span style={{ display: 'inline-block', width: 10, height: 10, background: COL_FIELD, borderRadius: 2, marginRight: 5 }} />vs field (all other teams)</span>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 520 }}>
+            <thead>
+              <tr>
+                <th style={th}></th>
+                <th style={{ ...th, color: COL_TEAM }}>vs {selTeam}</th>
+                <th style={th}>vs field</th>
+                <th style={th}>Δ vs field</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => {
+                const hasBoth = r.team.p50 != null && r.field.p50 != null
+                const d = hasBoth ? r.team.p50 - r.field.p50 : null
+                return (
+                  <tr key={r.name}>
+                    <td style={{ ...td, fontWeight: 700, fontSize: 14 }}>{r.name}</td>
+                    <td style={td}><Cell b={r.team} /></td>
+                    <td style={td}><Cell b={r.field} /></td>
+                    <td style={{ ...td, fontSize: 18, fontWeight: 800, color: d == null ? 'var(--text-faint)' : d > 0 ? '#3aa76d' : d < 0 ? '#e0524a' : 'var(--text-faint)' }}>
+                      {d == null ? '—' : dstr(d)}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
         </div>
       )}
     </div>
