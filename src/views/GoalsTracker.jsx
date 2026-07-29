@@ -61,24 +61,36 @@ const fmtDelta = (d, unit) => {
 }
 const LBL = { fontSize: 11, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: '.04em' }
 
-function Sparkline({ points, target }) {
+function Sparkline({ points, target, baseline, unit }) {
   const vals = points.map((p) => p.value).filter((x) => x != null)
-  if (vals.length < 2) return <span style={{ color: 'var(--text-faint)', fontSize: 11 }}>not enough days yet</span>
-  const all = [...vals, target]
+  if (vals.length < 2) return <span style={{ color: 'var(--text-faint)', fontSize: 11 }}>Not enough days yet — the trend line fills in as you sync each day.</span>
+  const refs = [target, baseline].filter((x) => x != null)
+  const all = [...vals, ...refs]
   const min = Math.min(...all), max = Math.max(...all)
-  const span = max - min || 1
-  const W = 1000, H = 90
+  const pad = (max - min) * 0.14 || Math.abs(max) * 0.14 || 1
+  const lo = min - pad, hi = max + pad
+  const W = 1000, H = 118
   const step = W / (points.length - 1)
-  const y = (v) => H - ((v - min) / span) * (H - 16) - 8
+  const y = (v) => H - ((v - lo) / (hi - lo)) * H
   const path = points.map((p, i) => (p.value == null ? null : `${i === 0 ? 'M' : 'L'}${(i * step).toFixed(1)},${y(p.value).toFixed(1)}`)).filter(Boolean).join(' ')
+  const leg = { display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--text-faint)' }
+  const bar = (style) => <span style={{ display: 'inline-block', width: 16, verticalAlign: 'middle', ...style }} />
   return (
-    <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ display: 'block', overflow: 'visible' }}>
-      <line x1="0" y1={y(target)} x2={W} y2={y(target)} stroke="#c9a227" strokeWidth="1.5" strokeDasharray="6 6" opacity="0.7" vectorEffect="non-scaling-stroke" />
-      <path d={path} fill="none" stroke="#4c8bf5" strokeWidth="2.5" vectorEffect="non-scaling-stroke" />
-      {points.map((p, i) => p.value != null && (
-        <circle key={i} cx={i * step} cy={y(p.value)} r={i === points.length - 1 ? 4 : 2.5} fill={i === points.length - 1 ? '#4c8bf5' : '#4c8bf5aa'} vectorEffect="non-scaling-stroke" />
-      ))}
-    </svg>
+    <div>
+      <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', fontSize: 11, marginBottom: 6 }}>
+        <span style={leg}>{bar({ borderTop: '3px solid #4c8bf5' })} Trend (per game)</span>
+        {target != null && <span style={leg}>{bar({ borderTop: '2px dashed #c9a227' })} Target {fmt(target, unit)}</span>}
+        {baseline != null && <span style={leg}>{bar({ borderTop: '2px dashed #8a91a0' })} Start {fmt(baseline, unit)}</span>}
+      </div>
+      <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ display: 'block', overflow: 'visible' }}>
+        {baseline != null && <line x1="0" y1={y(baseline)} x2={W} y2={y(baseline)} stroke="#8a91a0" strokeWidth="1.5" strokeDasharray="2 7" opacity="0.85" vectorEffect="non-scaling-stroke" />}
+        {target != null && <line x1="0" y1={y(target)} x2={W} y2={y(target)} stroke="#c9a227" strokeWidth="2" strokeDasharray="9 5" opacity="0.95" vectorEffect="non-scaling-stroke" />}
+        <path d={path} fill="none" stroke="#4c8bf5" strokeWidth="2.5" vectorEffect="non-scaling-stroke" />
+        {points.map((p, i) => p.value != null && (
+          <circle key={i} cx={i * step} cy={y(p.value)} r={i === points.length - 1 ? 4.5 : 2.5} fill={i === points.length - 1 ? '#4c8bf5' : '#4c8bf5aa'} vectorEffect="non-scaling-stroke" />
+        ))}
+      </svg>
+    </div>
   )
 }
 
@@ -108,6 +120,18 @@ function GoalCard({ goal, lib, series, games, prows }) {
     const dayPlayer = playersForDay(dayGameIds)
     return { date, value: metricValue(goal.metric_key, dayGames, dayPlayer) }
   }), [days, games, series, prows, goal])
+
+  // one point per individual game (chronological) for the trend line
+  const gamePoints = useMemo(() => {
+    const gs = games.filter((g) => { const s = series[g.grid_series_id]; return s && s.series_type === 'SCRIM' && g.riot_enriched && g.game_duration_s >= MIN_REAL_GAME_S && days.includes(s.series_date) })
+      .sort((a, b) => {
+        const sa = series[a.grid_series_id], sb = series[b.grid_series_id]
+        if (sa.series_date !== sb.series_date) return sa.series_date.localeCompare(sb.series_date)
+        if (a.grid_series_id !== b.grid_series_id) return String(a.grid_series_id).localeCompare(String(b.grid_series_id))
+        return (a.game_number ?? 0) - (b.game_number ?? 0)
+      })
+    return gs.map((g) => ({ date: series[g.grid_series_id].series_date, value: metricValue(goal.metric_key, [g], playersForDay(new Set([g.id]))) }))
+  }, [days, games, series, prows, goal])
 
   const withVals = points.filter((p) => p.value != null)
   const latest = withVals.length ? withVals[withVals.length - 1].value : null
@@ -178,10 +202,7 @@ function GoalCard({ goal, lib, series, games, prows }) {
           <div style={{ fontSize: 18, fontWeight: 600, color: '#c9a227' }}>{fmt(target, unit)}</div>
         </div>
         <div style={{ flex: 1, minWidth: 320 }}>
-          <Sparkline points={points} target={target} />
-          <div style={{ fontSize: 10, color: 'var(--text-faint)', textAlign: 'right' }}>
-            baseline {fmt(Number(goal.baseline_value), unit)}
-          </div>
+          <Sparkline points={gamePoints} target={target} baseline={Number(goal.baseline_value)} unit={unit} />
         </div>
       </div>
       {isLaners && weakest && (
@@ -203,7 +224,7 @@ export default function GoalsTracker() {
   )
   const { data: gameRows } = useSupabaseQuery(
     () => fetchAllRows(() => supabase.from('grid_games').select(
-      'id, grid_series_id, riot_enriched, game_duration_s, gold_diff_15, cs_diff_15, first_tower_sentinels, sentinels_dragons, opponent_dragons, sentinels_grubs, positive_plays, give_backs, snowballs'
+      'id, grid_series_id, game_number, riot_enriched, game_duration_s, gold_diff_15, cs_diff_15, first_tower_sentinels, sentinels_dragons, opponent_dragons, sentinels_grubs, positive_plays, give_backs, snowballs'
     )), []
   )
   const { data: playerRows } = useSupabaseQuery(
@@ -257,7 +278,7 @@ export default function GoalsTracker() {
       <h2>Team Goals</h2>
       <p className="panel-caption">
         Team-wide SMART targets for the prep week{cycleOpp ? <> — building toward <b style={{ color: 'var(--text)' }}>{cycleOpp}</b>{cycleDate ? ` (${cycleDate})` : ''}</> : ''}.
-        Measured off the day&apos;s scrims each time you sync. ▲ means the latest day moved toward target, ▼ away. Gold dashed line on each spark is the target.
+        Measured off the day&apos;s scrims each time you sync. Each graph shows the daily <b style={{ color: '#4c8bf5' }}>trend</b> between where we <b style={{ color: '#8a91a0' }}>started</b> (grey dashed) and the <b style={{ color: '#c9a227' }}>target</b> (gold dashed) — climbing toward the gold line is improvement. ▲ means the latest day moved toward target, ▼ away.
       </p>
 
       {loading && <div className="loading-state">Loading goals…</div>}
