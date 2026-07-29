@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { supabase } from '../lib/supabaseClient.js'
 import { useSupabaseQuery, fetchAllRows } from '../lib/useSupabaseQuery.js'
 import { canonicalOpponentName } from '../lib/constants.js'
@@ -55,10 +55,156 @@ function ChampIcon({ champKey, ver, title, size = 26 }) {
   )
 }
 
+// ---------------------------------------------------------------------------
+// Per-game stat cards — same layout as the season dashboard, but for one game.
+// All values come from GRID (grid_games row + that game's player rows).
+// ---------------------------------------------------------------------------
+const sum = (arr, f) => arr.reduce((a, x) => a + (Number(f(x)) || 0), 0)
+const sg = (v, d = 0) => (v == null ? '—' : (v > 0 ? '+' : '') + Number(v).toFixed(d))
+const yn = (b) => (b === true ? { t: 'Yes', c: '#3aa76d' } : b === false ? { t: 'No', c: '#e0524a' } : { t: '—', c: 'var(--text-faint)' })
+
+const CARD_DEFS = [
+  { key: 'early', title: 'Early Game' },
+  { key: 'economy', title: 'Economy' },
+  { key: 'objectives', title: 'Objectives' },
+  { key: 'teamAgg', title: 'Aggression (Team)' },
+  { key: 'players', title: 'Players' },
+]
+
+function buildCards(g, players) {
+  const sp = players.filter((p) => p.is_sentinels)
+  const op = players.filter((p) => !p.is_sentinels)
+  const min = g.game_duration_s ? g.game_duration_s / 60 : null
+  const perMin = (v) => (min ? v / min : null)
+  const sGold = sum(sp, (p) => p.gold_earned), oGold = sum(op, (p) => p.gold_earned)
+  const sCs = sum(sp, (p) => p.cs)
+  const sDmg = sum(sp, (p) => p.champ_damage)
+  const sKills = g.sentinels_kills, sDeaths = g.opponent_kills
+  const sAssists = sum(sp, (p) => p.assists)
+  const sXp15 = sum(sp, (p) => p.xp_at_15), oXp15 = sum(op, (p) => p.xp_at_15)
+  const num = (v, d = 1) => (v == null ? '—' : Number(v).toFixed(d))
+  return {
+    early: [
+      { label: 'CS diff @15', value: sg(g.cs_diff_15, 1) },
+      { label: 'Gold diff @15', value: sg(g.gold_diff_15, 0) },
+      { label: 'XP diff @15', value: sXp15 && oXp15 ? sg(sXp15 - oXp15, 0) : '—' },
+      { label: 'Ahead in CS @15', bool: g.cs_diff_15 == null ? null : g.cs_diff_15 > 0 },
+      { label: 'First Blood', bool: g.first_blood_sentinels },
+    ],
+    economy: [
+      { label: 'Gold / min', value: min ? Math.round(perMin(sGold)) : '—' },
+      { label: 'Gold diff / min', value: min && op.length ? sg(perMin(sGold - oGold), 0) : '—' },
+      { label: 'Gold diff @15', value: sg(g.gold_diff_15, 0) },
+      { label: 'CS / min', value: min ? num(perMin(sCs), 1) : '—' },
+      { label: 'CS diff @15', value: sg(g.cs_diff_15, 1) },
+      { label: 'First Tower', bool: g.first_tower_sentinels },
+      { label: 'Tower diff', value: sg((g.sentinels_towers ?? 0) - (g.opponent_towers ?? 0), 0) },
+    ],
+    objectives: [
+      { label: 'Dragons', value: `${g.sentinels_dragons ?? '—'}${g.opponent_dragons != null ? ` (opp ${g.opponent_dragons})` : ''}` },
+      { label: 'Voidgrubs', value: `${g.sentinels_grubs ?? '—'}${g.opponent_grubs != null ? ` (opp ${g.opponent_grubs})` : ''}` },
+      { label: 'Herald', value: `${g.sentinels_heralds ?? '—'}${g.opponent_heralds != null ? ` (opp ${g.opponent_heralds})` : ''}` },
+      { label: 'Baron / Nashor', value: `${g.sentinels_barons ?? '—'}${g.opponent_barons != null ? ` (opp ${g.opponent_barons})` : ''}` },
+      { label: 'Towers', value: `${g.sentinels_towers ?? '—'}${g.opponent_towers != null ? ` (opp ${g.opponent_towers})` : ''}` },
+    ],
+    teamAgg: [
+      { label: 'Damage / min', value: min ? Math.round(perMin(sDmg)) : '—' },
+      { label: 'First Blood', bool: g.first_blood_sentinels },
+      { label: 'Kills', value: sKills ?? '—' },
+      { label: 'Deaths', value: sDeaths ?? '—' },
+      { label: 'KDA', value: sDeaths ? num(((sKills || 0) + sAssists) / sDeaths, 1) : num((sKills || 0) + sAssists, 1) },
+      { label: 'Assists / Kill', value: sKills ? num(sAssists / sKills, 1) : '—' },
+    ],
+  }
+}
+
+const ROLE_SORT = ['TOP', 'JUNGLE', 'MIDDLE', 'BOTTOM', 'UTILITY']
+function StatCard({ title, rows }) {
+  return (
+    <div style={{ border: '1px solid #223', borderRadius: 8, overflow: 'hidden', background: '#10131a', minWidth: 260, flex: '1 1 300px' }}>
+      <div style={{ background: '#2aa9c9', color: '#06222b', fontWeight: 800, fontSize: 13, padding: '6px 12px', letterSpacing: '.03em' }}>{title.toUpperCase()}</div>
+      <div style={{ padding: '4px 0' }}>
+        {rows.map((r, i) => {
+          const b = r.bool !== undefined ? yn(r.bool) : null
+          const negVal = typeof r.value === 'string' && r.value.startsWith('-')
+          return (
+            <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '5px 12px', fontSize: 13 }}>
+              <span style={{ color: 'var(--text-faint)' }}>{r.label}</span>
+              {b
+                ? <span style={{ fontWeight: 700, color: b.c }}>{b.t}</span>
+                : <span style={{ fontWeight: 700, color: negVal ? '#e0524a' : (typeof r.value === 'string' && r.value.startsWith('+')) ? '#3aa76d' : 'var(--text)' }}>{r.value}</span>}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function PlayersCard({ players }) {
+  const sp = players.filter((p) => p.is_sentinels)
+    .sort((a, b) => ROLE_SORT.indexOf(a.team_position) - ROLE_SORT.indexOf(b.team_position))
+  const th = { textAlign: 'right', padding: '4px 8px', fontSize: 10, color: 'var(--text-faint)', textTransform: 'uppercase' }
+  const td = { textAlign: 'right', padding: '4px 8px', fontSize: 12 }
+  return (
+    <div style={{ border: '1px solid #223', borderRadius: 8, overflow: 'hidden', background: '#10131a', flex: '1 1 100%', minWidth: 320 }}>
+      <div style={{ background: '#2aa9c9', color: '#06222b', fontWeight: 800, fontSize: 13, padding: '6px 12px' }}>PLAYERS</div>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead><tr>
+            <th style={{ ...th, textAlign: 'left' }}>Player</th>
+            <th style={th}>K/D/A</th><th style={th}>Dmg/min</th><th style={th}>Dmg%</th>
+            <th style={th}>CS/min</th><th style={th}>KP%</th><th style={th}>Penta</th>
+          </tr></thead>
+          <tbody>
+            {sp.map((p) => (
+              <tr key={p.player} style={{ borderTop: '1px solid #1c2230' }}>
+                <td style={{ ...td, textAlign: 'left', fontWeight: 600 }}>{p.player}</td>
+                <td style={td}>{p.kills ?? 0}/{p.deaths ?? 0}/{p.assists ?? 0}</td>
+                <td style={td}>{p.champ_damage_per_min != null ? Math.round(p.champ_damage_per_min) : '—'}</td>
+                <td style={td}>{p.champ_damage_share != null ? `${Math.round(p.champ_damage_share)}%` : '—'}</td>
+                <td style={td}>{p.cs_per_min != null ? p.cs_per_min.toFixed(1) : '—'}</td>
+                <td style={td}>{p.kill_participation != null ? `${Math.round(p.kill_participation)}%` : '—'}</td>
+                <td style={td}>{p.penta_kills || 0}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function GameDetails({ g, players, sel }) {
+  if (!g.riot_enriched) return <div style={{ padding: 10, color: 'var(--text-faint)', fontSize: 12 }}>No enriched data for this game yet.</div>
+  const cards = buildCards(g, players || [])
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, padding: '12px 4px' }}>
+      {sel.has('early') && <StatCard title="Early Game" rows={cards.early} />}
+      {sel.has('economy') && <StatCard title="Economy" rows={cards.economy} />}
+      {sel.has('objectives') && <StatCard title="Objectives" rows={cards.objectives} />}
+      {sel.has('teamAgg') && <StatCard title="Aggression (Team)" rows={cards.teamAgg} />}
+      {sel.has('players') && <PlayersCard players={players || []} />}
+    </div>
+  )
+}
+
 export default function MatchHistory() {
   const champs = useChampions()
   const [visibleCount, setVisibleCount] = useState(50)
   const [picksByGame, setPicksByGame] = useState({})
+  const [openGames, setOpenGames] = useState({}) // gameId -> Set of selected card keys
+  const toggleOpen = (id) => setOpenGames((prev) => {
+    const next = { ...prev }
+    if (next[id]) delete next[id]
+    else next[id] = new Set(CARD_DEFS.map((c) => c.key)) // all cards on by default
+    return next
+  })
+  const toggleCard = (id, key) => setOpenGames((prev) => {
+    const cur = new Set(prev[id] || [])
+    if (cur.has(key)) cur.delete(key); else cur.add(key)
+    return { ...prev, [id]: cur }
+  })
 
   const { data: series, loading: sLoading } = useSupabaseQuery(
     () => supabase.from('grid_series').select('grid_series_id, series_date, opponent_name, series_type'),
@@ -66,7 +212,12 @@ export default function MatchHistory() {
   )
   const { data: games, loading: gLoading } = useSupabaseQuery(
     () => fetchAllRows(() => supabase.from('grid_games').select(
-      'id, grid_series_id, game_number, sentinels_won, patch, sentinels_side, sentinels_bans, opponent_bans, riot_enriched'
+      'id, grid_series_id, game_number, sentinels_won, patch, sentinels_side, sentinels_bans, opponent_bans, riot_enriched, ' +
+      'game_duration_s, gold_diff_15, cs_diff_15, first_blood_sentinels, first_tower_sentinels, ' +
+      'sentinels_dragons, opponent_dragons, sentinels_heralds, opponent_heralds, sentinels_grubs, opponent_grubs, ' +
+      'sentinels_barons, opponent_barons, sentinels_towers, opponent_towers, ' +
+      'sentinels_gold_at_15, opponent_gold_at_15, sentinels_cs_at_15, opponent_cs_at_15, ' +
+      'sentinels_kills, opponent_kills, positive_plays, give_backs, snowballs'
     )),
     []
   )
@@ -128,6 +279,7 @@ export default function MatchHistory() {
         ourBans: g.sentinels_bans || [],
         oppBans: g.opponent_bans || [],
         enriched: g.riot_enriched,
+        raw: g,
       })
     }
     out.sort((a, b) => {
@@ -147,7 +299,9 @@ export default function MatchHistory() {
     ;(async () => {
       const { data } = await supabase
         .from('grid_player_games')
-        .select('game_id, player, champion, is_sentinels, team_position')
+        .select('game_id, player, champion, is_sentinels, team_position, kills, deaths, assists, ' +
+          'champ_damage, champ_damage_per_min, champ_damage_share, cs, cs_per_min, cs_at_15, gold_at_15, xp_at_15, ' +
+          'gold_earned, kill_participation, penta_kills, quadra_kills, vision_score')
         .in('game_id', ids.slice(0, 200))
       if (!alive || !data) return
       const add = {}
@@ -205,9 +359,11 @@ export default function MatchHistory() {
               {visible.map((r) => {
                 const ours = orderPicks(picksByGame[r.gameId], true)
                 const theirs = orderPicks(picksByGame[r.gameId], false)
+                const open = openGames[r.gameId]
                 return (
-                  <tr key={r.gameId} style={{ borderTop: '1px solid var(--border, #2b2b33)' }}>
-                    <td style={td}>{r.date}</td>
+                  <Fragment key={r.gameId}>
+                  <tr onClick={() => toggleOpen(r.gameId)} title="Click for per-game stats" style={{ borderTop: '1px solid var(--border, #2b2b33)', cursor: 'pointer', background: open ? '#141821' : undefined }}>
+                    <td style={td}><span style={{ color: 'var(--text-faint)', marginRight: 6 }}>{open ? '▾' : '▸'}</span>{r.date}</td>
                     <td style={td}>
                       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
                         <span style={{ width: 9, height: 9, borderRadius: '50%', background: r.color || '#555', display: 'inline-block' }} />
@@ -246,6 +402,22 @@ export default function MatchHistory() {
                       {ours.map((p) => p.player).join(', ')}
                     </td>
                   </tr>
+                  {open && (
+                    <tr>
+                      <td colSpan={11} style={{ padding: '2px 10px 14px', background: '#141821' }}>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, padding: '6px 2px' }}>
+                          {CARD_DEFS.map((c) => (
+                            <label key={c.key} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text)', cursor: 'pointer' }}>
+                              <input type="checkbox" checked={open.has(c.key)} onChange={() => toggleCard(r.gameId, c.key)} />
+                              {c.title}
+                            </label>
+                          ))}
+                        </div>
+                        <GameDetails g={r.raw} players={picksByGame[r.gameId]} sel={open} />
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
                 )
               })}
             </tbody>
