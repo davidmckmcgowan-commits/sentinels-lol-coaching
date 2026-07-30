@@ -3,7 +3,7 @@
 // Over 100 (green zone) is improvement by definition; under 100 (red) is below
 // our own history. C = best-fit trend of our % over time (solid to today,
 // dashed projection to game day). D = each individual game's %.
-import { daysBetween, rangeDates, wdOf, lsqFit, fmtPct, quantile, clampN } from '../lib/prognostic.js'
+import { daysBetween, rangeDates, wdOf, lsqFit, quantile, clampN } from '../lib/prognostic.js'
 
 const C_PAR = '#c9a227'    // the 100% par line — the bar to beat
 const C_TREND = '#4c8bf5'  // C — trend (best-fit direction)
@@ -20,8 +20,12 @@ export default function DmGraph({ start, end, today, dayData, gameData, showProj
     return <span style={{ color: 'var(--text-faint)', fontSize: 11 }}>No scrims in this window yet — the graph fills in as you sync.</span>
   }
 
-  const totalDays = Math.max(1, daysBetween(start, end))
-  const todayNum = Math.max(0, Math.min(totalDays, daysBetween(start, today)))
+  // Start the axis at the first day that actually has data, not the window
+  // start — no dead space on the left. It compresses naturally as days fill in.
+  const dataDates = [...dd.map((d) => d.date), ...gd.map((g) => g.date)]
+  const effStart = dataDates.length ? dataDates.reduce((a, b) => (a < b ? a : b)) : start
+  const totalDays = Math.max(1, daysBetween(effStart, end))
+  const todayNum = Math.max(0, Math.min(totalDays, daysBetween(effStart, today)))
   const W = 1000, H = compact ? 96 : 150
 
   // Scale the axis to the DAY averages, not to single games — one blowout scrim
@@ -36,22 +40,21 @@ export default function DmGraph({ start, end, today, dayData, gameData, showProj
   lo -= bpad; hi += bpad
   const isOff = (v) => v < lo || v > hi
   const y = (v) => H - ((clampN(v, lo, hi) - lo) / (hi - lo)) * H
+  const pctTop = (v) => (1 - (clampN(v, lo, hi) - lo) / (hi - lo)) * 100
+
   // Reserve up to 0.6 of a day-width on the right so the last day's games (which
   // sit at the far edge) spread inward instead of spilling off the chart.
   const dayWidth = W / (totalDays + 0.6)
   const px = (dn) => dn * dayWidth
-  const pxDate = (d) => px(daysBetween(start, d))
-  const pctTop = (v) => (1 - (clampN(v, lo, hi) - lo) / (hi - lo)) * 100
+  const pxDate = (d) => px(daysBetween(effStart, d))
   const pctLeft = (dn) => (px(dn) / W) * 100
 
   // C — best-fit trend through the day %s
-  const fit = lsqFit(dd.map((d) => ({ x: daysBetween(start, d.date), y: d.pct })))
-  const x0 = dd.length ? Math.min(...dd.map((d) => daysBetween(start, d.date))) : 0
+  const fit = lsqFit(dd.map((d) => ({ x: daysBetween(effStart, d.date), y: d.pct })))
+  const x0 = dd.length ? Math.min(...dd.map((d) => daysBetween(effStart, d.date))) : 0
   const trendY = (dn) => fit ? fit.intercept + fit.slope * dn : null
   const solidPath = fit ? `M${px(x0).toFixed(1)},${y(trendY(x0)).toFixed(1)} L${px(todayNum).toFixed(1)},${y(trendY(todayNum)).toFixed(1)}` : null
   const projPath = fit && showProjection && todayNum < totalDays ? `M${px(todayNum).toFixed(1)},${y(trendY(todayNum)).toFixed(1)} L${px(totalDays).toFixed(1)},${y(trendY(totalDays)).toFixed(1)}` : null
-  // Trend is always blue to match the legend; direction is read from the slope
-  // itself and from the green (above-par) / red (below-par) background zones.
 
   // D — each game, nudged within its day so a day reads left→right
   const gPts = gd.map((g) => {
@@ -63,7 +66,7 @@ export default function DmGraph({ start, end, today, dayData, gameData, showProj
 
   const yTop = y(hi), y100 = y(100), yBot = y(lo)
   const yticks = [lo, (lo + 100) / 2, 100, (100 + hi) / 2, hi]
-  const dateList = rangeDates(start, end)
+  const dateList = rangeDates(effStart, end)
   const showEvery = dateList.length > 12 ? Math.ceil(dateList.length / 12) : 1
 
   const leg = { display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--text-faint)' }
@@ -80,10 +83,11 @@ export default function DmGraph({ start, end, today, dayData, gameData, showProj
           <span style={{ color: C_UP }}>▲ over 100 = improving</span>
         </div>
       )}
-      <div style={{ display: 'flex' }}>
-        <div style={{ position: 'relative', width: 42, minHeight: H }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start' }}>
+        {/* y-axis — fixed to the chart height H so the ticks line up with the lines */}
+        <div style={{ position: 'relative', width: 42, height: H, flex: '0 0 auto' }}>
           {yticks.map((v, i) => (
-            <span key={i} style={{ position: 'absolute', right: 5, top: `calc(${pctTop(v)}% - 7px)`, fontSize: 10, color: Math.round(v) === 100 ? C_PAR : 'var(--text-faint)', fontWeight: Math.round(v) === 100 ? 700 : 400 }}>{Math.round(v)}%</span>
+            <span key={i} style={{ position: 'absolute', right: 5, top: `${pctTop(v)}%`, transform: 'translateY(-50%)', fontSize: 10, color: Math.round(v) === 100 ? C_PAR : 'var(--text-faint)', fontWeight: Math.round(v) === 100 ? 700 : 400 }}>{Math.round(v)}%</span>
           ))}
         </div>
         <div style={{ position: 'relative', flex: 1 }}>
@@ -110,7 +114,7 @@ export default function DmGraph({ start, end, today, dayData, gameData, showProj
               if (i % showEvery !== 0 && d !== end) return null
               const isEnd = d === end && showProjection
               return (
-                <span key={d} style={{ position: 'absolute', left: `${pctLeft(daysBetween(start, d))}%`, transform: 'translateX(-50%)', fontSize: 9, textAlign: 'center', color: isEnd ? C_PAR : 'var(--text-faint)', whiteSpace: 'nowrap', lineHeight: 1.1 }}>
+                <span key={d} style={{ position: 'absolute', left: `${pctLeft(daysBetween(effStart, d))}%`, transform: 'translateX(-50%)', fontSize: 9, textAlign: 'center', color: isEnd ? C_PAR : 'var(--text-faint)', whiteSpace: 'nowrap', lineHeight: 1.1 }}>
                   {wdOf(d)}<br />{d.slice(5)}{isEnd ? ' ★' : ''}
                 </span>
               )
