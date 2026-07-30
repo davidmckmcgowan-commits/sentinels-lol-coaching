@@ -66,51 +66,60 @@ function GoalCard({ goal, lib, series, games, prows, team }) {
   const today = todayISO()
 
   const model = useMemo(() => {
-    // completed games, with canonical opponent + date
     const completed = games.map((g) => {
       const s = series[g.grid_series_id]
       if (!s || !g.riot_enriched || g.game_duration_s < MIN_REAL_GAME_S) return null
-      return { g, date: s.series_date, type: s.series_type, opp: canonicalOpponentName(s.opponent_name || '') }
+      return { g, date: s.series_date, opp: canonicalOpponentName(s.opponent_name || '') }
     }).filter(Boolean)
 
-    // 100% PROGNOSTIC — our FROZEN historical average vs the selected team (or
-    // all), from every completed game BEFORE the tracked window (before July).
-    const parGames = completed.filter((c) => c.date < WIN_START && (team === 'ALL' || c.opp === team))
-    const par = metricValue(goal.metric_key, parGames.map((c) => c.g), playersFor(new Set(parGames.map((c) => c.g.id))))
-    const parN = parGames.length
+    // Frozen pre-July baseline PER OPPONENT (the 100% line). Every game is always
+    // scored against the baseline of the team THAT game was played against — even
+    // in All-teams — because prognostic % normalises per opponent (100% = at par).
+    const preJuly = completed.filter((c) => c.date < WIN_START)
+    const parCache = {}
+    const parFor = (opp) => {
+      if (!(opp in parCache)) {
+        const gs = preJuly.filter((c) => c.opp === opp)
+        parCache[opp] = gs.length ? { par: metricValue(goal.metric_key, gs.map((c) => c.g), playersFor(new Set(gs.map((c) => c.g.id)))), n: gs.length } : { par: null, n: 0 }
+      }
+      return parCache[opp]
+    }
+    const selPar = team === 'ALL' ? null : parFor(team)
 
-    // TREND numerator — our scrim performance over the window (all opponents),
-    // so the line is the same whoever you pick; only par moves.
-    const scrims = completed.filter((c) => c.type === 'SCRIM' && c.date >= WIN_START && c.date <= today)
+    // Games since the start of July — the selected team, or every team for All.
+    const tracked = completed.filter((c) => (team === 'ALL' || c.opp === team) && c.date >= WIN_START && c.date <= today)
       .sort((a, b) => a.date !== b.date ? a.date.localeCompare(b.date)
         : a.g.grid_series_id !== b.g.grid_series_id ? String(a.g.grid_series_id).localeCompare(String(b.g.grid_series_id))
           : (a.g.game_number ?? 0) - (b.g.game_number ?? 0))
+      .map((c) => {
+        const p = team === 'ALL' ? parFor(c.opp).par : selPar.par
+        const val = metricValue(goal.metric_key, [c.g], playersFor(new Set([c.g.id])))
+        return { ...c, raw: val, pct: prognosticPct(val, p, higher) }
+      })
+      .filter((c) => c.pct != null)
 
     const byDay = {}
-    for (const c of scrims) (byDay[c.date] ??= []).push(c.g)
+    for (const c of tracked) (byDay[c.date] ??= []).push(c)
     const dayData = Object.keys(byDay).sort().map((date) => {
-      const dg = byDay[date]
-      const val = metricValue(goal.metric_key, dg, playersFor(new Set(dg.map((g) => g.id))))
-      return { date, raw: val, pct: prognosticPct(val, par, higher) }
+      const arr = byDay[date]
+      return { date, raw: arr.reduce((a, b) => a + b.raw, 0) / arr.length, pct: arr.reduce((a, b) => a + b.pct, 0) / arr.length }
     })
-    const gameData = scrims.map((c) => {
-      const dg = byDay[c.date]
-      return { date: c.date, idxInDay: dg.indexOf(c.g), dayCount: dg.length, pct: prognosticPct(metricValue(goal.metric_key, [c.g], playersFor(new Set([c.g.id]))), par, higher) }
-    })
+    const gameData = tracked.map((c) => { const dg = byDay[c.date]; return { date: c.date, idxInDay: dg.indexOf(c), dayCount: dg.length, pct: c.pct } })
 
-    const withPct = dayData.filter((d) => d.pct != null)
-    const latest = withPct.length ? withPct[withPct.length - 1] : null
-    return { par, parN, dayData, gameData, latest }
+    const latest = dayData.length ? dayData[dayData.length - 1] : null
+    return { selPar, dayData, gameData, latest, hasData: dayData.length > 0 }
   }, [games, series, prows, goal, team, higher, today])
 
-  const { par, parN, dayData, gameData, latest } = model
+  const { selPar, dayData, gameData, latest, hasData } = model
   const latestPct = latest?.pct
   const teamLabel = team === 'ALL' ? 'all teams' : team
-  const parLabel = par != null ? `${fmt(par, unit)} vs ${teamLabel}` : null
+  const noBaseline = team !== 'ALL' && (!selPar || selPar.par == null)
+  const parLabel = team === 'ALL' ? 'each game vs its own team' : (selPar && selPar.par != null ? `${fmt(selPar.par, unit)} vs ${team}` : null)
 
-  const verdict = latestPct == null ? { c: '#8a91a0', t: 'Waiting on scrims to read against the 100% line.' }
-    : latestPct >= 100 ? { c: '#3fb950', t: `Above our ${teamLabel} 100% line — ${fmtPct(latestPct)} (${fmt(latest.raw, unit)} vs a ${fmt(par, unit)} baseline).` }
-      : { c: '#e5534b', t: `Below our ${teamLabel} 100% line — ${fmtPct(latestPct)} (${fmt(latest.raw, unit)} vs a ${fmt(par, unit)} baseline).` }
+  const verdict = latestPct == null ? { c: '#8a91a0', t: 'Waiting on July games to read against the 100% line.' }
+    : latestPct >= 100
+      ? { c: '#3fb950', t: team === 'ALL' ? `Above the 100% line — ${fmtPct(latestPct)} across all teams since July.` : `Above our ${team} 100% line — ${fmtPct(latestPct)} (${fmt(latest.raw, unit)} vs a ${fmt(selPar.par, unit)} baseline).` }
+      : { c: '#e5534b', t: team === 'ALL' ? `Below the 100% line — ${fmtPct(latestPct)} across all teams since July.` : `Below our ${team} 100% line — ${fmtPct(latestPct)} (${fmt(latest.raw, unit)} vs a ${fmt(selPar.par, unit)} baseline).` }
 
   return (
     <div style={{ border: '1px solid var(--border, #2b2b33)', borderRadius: 10, padding: 14, background: 'var(--panel-2, #17171d)' }}>
@@ -123,7 +132,8 @@ function GoalCard({ goal, lib, series, games, prows, team }) {
         <div style={{ textAlign: 'right' }}>
           <div style={LBL}>Now vs {teamLabel}</div>
           <div style={{ fontSize: 28, fontWeight: 800, lineHeight: 1.1, color: verdict.c }}>{fmtPct(latestPct)}</div>
-          {par != null && <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>100% = {fmt(par, unit)} · {parN} games</div>}
+          {team !== 'ALL' && selPar && selPar.par != null && <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>100% = {fmt(selPar.par, unit)} · {selPar.n} games</div>}
+          {team === 'ALL' && <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>each game vs its own team&apos;s baseline</div>}
         </div>
       </div>
 
@@ -131,9 +141,11 @@ function GoalCard({ goal, lib, series, games, prows, team }) {
         {verdict.t}
       </div>
 
-      {par == null
-        ? <div style={{ fontSize: 12, color: 'var(--text-faint)' }}>No games on record vs {teamLabel} to set a par yet.</div>
-        : <DmGraph start={WIN_START} end={today} today={today} dayData={dayData} gameData={gameData} showProjection={false} parLabel={parLabel} />}
+      {noBaseline
+        ? <div style={{ fontSize: 12, color: 'var(--text-faint)' }}>No pre-July games vs {teamLabel} to set the 100% line yet.</div>
+        : !hasData
+          ? <div style={{ fontSize: 12, color: 'var(--text-faint)' }}>No games since July 1 vs {teamLabel} yet.</div>
+          : <DmGraph start={WIN_START} end={today} today={today} dayData={dayData} gameData={gameData} showProjection={false} parLabel={parLabel} />}
     </div>
   )
 }
@@ -216,7 +228,7 @@ export default function GoalsTracker() {
       </div>
       <p className="panel-caption">
         Long-run development on the <b style={{ color: 'var(--text)' }}>prognostic</b> scale: our performance as a <b>% of our own historical baseline</b> against the team you pick{cycleOpp ? <> (next official: <b style={{ color: 'var(--text)' }}>{cycleOpp}</b>{cycleDate ? ` ${cycleDate}` : ''})</> : ''}.
-        The bold <b style={{ color: '#c9a227' }}>100% line</b> is that baseline — every completed game against them <b>before July</b>, frozen. Anything <b style={{ color: '#3fb950' }}>over 100%</b> is improvement by definition — even if it&apos;s below our all-team average, we&apos;re now better than we&apos;ve historically been against that specific team. Pick a low-history opponent (say Cloud9) and the bar drops; a strong matchup (Dignitas) and it rises. The <b style={{ color: '#4c8bf5' }}>trend</b> line is our constant scrim level, re-scaled to whoever&apos;s selected.
+        The bold <b style={{ color: '#c9a227' }}>100% line</b> is that baseline — every completed game against them <b>before July</b>, frozen. Anything <b style={{ color: '#3fb950' }}>over 100%</b> is improvement by definition — even if it&apos;s below our all-team average, we&apos;re now better than we&apos;ve historically been against that specific team. Pick a low-history opponent (say Cloud9) and the bar drops; a strong matchup (Dignitas) and it rises. The <b style={{ color: '#4c8bf5' }}>trend</b> and dots are only our games against that team, from July 1 onward — no pre-July history is plotted.
       </p>
 
       {loading && <div className="loading-state">Loading goals…</div>}
