@@ -24,23 +24,25 @@ export default function DmGraph({ start, end, today, dayData, gameData, showProj
   const todayNum = Math.max(0, Math.min(totalDays, daysBetween(start, today)))
   const W = 1000, H = compact ? 96 : 150
 
-  // Clamp the visible band to the everyday range (5th–95th pct of values) so
-  // blowout days don't squash the movement. Always include 100%. Points beyond
-  // the band are pinned to the edge and ringed to flag them as off-scale.
-  const rawVals = [...gd.map((g) => g.pct), ...dd.map((d) => d.pct)]
-  let lo = quantile(rawVals, 0.05) ?? 0
-  let hi = quantile(rawVals, 0.95) ?? 200
+  // Scale the axis to the DAY averages, not to single games — one blowout scrim
+  // (gold@15 swings by thousands) shouldn't stretch the whole scale. Individual
+  // games beyond the band pin to the edge and get ringed as off-scale.
+  const basis = dd.length ? dd.map((d) => d.pct) : gd.map((g) => g.pct)
+  let lo = quantile(basis, 0.05) ?? 0
+  let hi = quantile(basis, 0.95) ?? 200
   lo = Math.min(lo, 100); hi = Math.max(hi, 100)
-  if (hi - lo < 20) { lo -= 10; hi += 10 }
-  const bpad = (hi - lo) * 0.12
+  if (hi - lo < 40) { lo -= 20; hi += 20 }
+  const bpad = (hi - lo) * 0.15
   lo -= bpad; hi += bpad
   const isOff = (v) => v < lo || v > hi
   const y = (v) => H - ((clampN(v, lo, hi) - lo) / (hi - lo)) * H
-  const px = (dn) => (dn / totalDays) * W
+  // Reserve up to 0.6 of a day-width on the right so the last day's games (which
+  // sit at the far edge) spread inward instead of spilling off the chart.
+  const dayWidth = W / (totalDays + 0.6)
+  const px = (dn) => dn * dayWidth
   const pxDate = (d) => px(daysBetween(start, d))
   const pctTop = (v) => (1 - (clampN(v, lo, hi) - lo) / (hi - lo)) * 100
-  const pctLeft = (dn) => (dn / totalDays) * 100
-  const dayWidth = W / totalDays
+  const pctLeft = (dn) => (px(dn) / W) * 100
 
   // C — best-fit trend through the day %s
   const fit = lsqFit(dd.map((d) => ({ x: daysBetween(start, d.date), y: d.pct })))
