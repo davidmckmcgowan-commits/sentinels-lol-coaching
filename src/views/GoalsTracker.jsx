@@ -2,14 +2,14 @@ import { useMemo, useState } from 'react'
 import { supabase } from '../lib/supabaseClient.js'
 import { useSupabaseQuery, fetchAllRows } from '../lib/useSupabaseQuery.js'
 import { canonicalOpponentName } from '../lib/constants.js'
-import { MIN_REAL_GAME_S, prognosticPct, fmtPct, todayISO } from '../lib/prognostic.js'
+import { MIN_REAL_GAME_S, prognosticPct, fmtPct, todayISO, TRACK_START } from '../lib/prognostic.js'
 import DmGraph from '../components/DmGraph.jsx'
 
 // Team Goals runs on the constant PROGNOSTIC line: our performance as a % of
 // our own historical par vs the selected team. The trend (our scrim level) is
 // the same whoever you pick — only the par (the denominator) moves, so the
 // whole % line re-scales. 100% = at par; over 100% = improvement by definition.
-const WIN_START = '2026-07-07' // Split 2 practice block start — the continuous window
+const WIN_START = TRACK_START // continuous tracked window; baseline is everything before this
 
 const avg = (arr, f) => { const v = arr.map(f).filter((x) => x != null); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null }
 const rate = (arr, f) => { const v = arr.map(f).filter((x) => x != null); return v.length ? (v.filter(Boolean).length / v.length) * 100 : null }
@@ -73,8 +73,9 @@ function GoalCard({ goal, lib, series, games, prows, team }) {
       return { g, date: s.series_date, type: s.series_type, opp: canonicalOpponentName(s.opponent_name || '') }
     }).filter(Boolean)
 
-    // PAR — our historical average on this metric vs the selected team (or all)
-    const parGames = completed.filter((c) => team === 'ALL' || c.opp === team)
+    // 100% PROGNOSTIC — our FROZEN historical average vs the selected team (or
+    // all), from every completed game BEFORE the tracked window (before July).
+    const parGames = completed.filter((c) => c.date < WIN_START && (team === 'ALL' || c.opp === team))
     const par = metricValue(goal.metric_key, parGames.map((c) => c.g), playersFor(new Set(parGames.map((c) => c.g.id))))
     const parN = parGames.length
 
@@ -107,9 +108,9 @@ function GoalCard({ goal, lib, series, games, prows, team }) {
   const teamLabel = team === 'ALL' ? 'all teams' : team
   const parLabel = par != null ? `${fmt(par, unit)} vs ${teamLabel}` : null
 
-  const verdict = latestPct == null ? { c: '#8a91a0', t: 'Waiting on scrims to read against par.' }
-    : latestPct >= 100 ? { c: '#3fb950', t: `Above our ${teamLabel} par — ${fmtPct(latestPct)} (${fmt(latest.raw, unit)} vs a ${fmt(par, unit)} par).` }
-      : { c: '#e5534b', t: `Below our ${teamLabel} par — ${fmtPct(latestPct)} (${fmt(latest.raw, unit)} vs a ${fmt(par, unit)} par).` }
+  const verdict = latestPct == null ? { c: '#8a91a0', t: 'Waiting on scrims to read against the 100% line.' }
+    : latestPct >= 100 ? { c: '#3fb950', t: `Above our ${teamLabel} 100% line — ${fmtPct(latestPct)} (${fmt(latest.raw, unit)} vs a ${fmt(par, unit)} baseline).` }
+      : { c: '#e5534b', t: `Below our ${teamLabel} 100% line — ${fmtPct(latestPct)} (${fmt(latest.raw, unit)} vs a ${fmt(par, unit)} baseline).` }
 
   return (
     <div style={{ border: '1px solid var(--border, #2b2b33)', borderRadius: 10, padding: 14, background: 'var(--panel-2, #17171d)' }}>
@@ -120,9 +121,9 @@ function GoalCard({ goal, lib, series, games, prows, team }) {
           <div style={{ fontSize: 11, color: 'var(--text-faint)', fontStyle: 'italic' }}>Measures: {meta.description || meta.label || goal.metric_key}</div>
         </div>
         <div style={{ textAlign: 'right' }}>
-          <div style={LBL}>Now vs {teamLabel} par</div>
+          <div style={LBL}>Now vs {teamLabel}</div>
           <div style={{ fontSize: 28, fontWeight: 800, lineHeight: 1.1, color: verdict.c }}>{fmtPct(latestPct)}</div>
-          {par != null && <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>par {fmt(par, unit)} · {parN} games</div>}
+          {par != null && <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>100% = {fmt(par, unit)} · {parN} games</div>}
         </div>
       </div>
 
@@ -214,8 +215,8 @@ export default function GoalsTracker() {
         </div>
       </div>
       <p className="panel-caption">
-        Long-run development on the <b style={{ color: 'var(--text)' }}>prognostic</b> scale: our performance as a <b>% of our own historical par</b> against the team you pick{cycleOpp ? <> (next official: <b style={{ color: 'var(--text)' }}>{cycleOpp}</b>{cycleDate ? ` ${cycleDate}` : ''})</> : ''}.
-        The bold <b style={{ color: '#c9a227' }}>100% line</b> is that par. Anything <b style={{ color: '#3fb950' }}>over 100%</b> is improvement by definition — even if it&apos;s below our all-team average, we&apos;re now better than we&apos;ve historically been against that specific team. Pick a low-history opponent (say Cloud9) and the bar drops; a strong matchup (Dignitas) and it rises. The <b style={{ color: '#4c8bf5' }}>trend</b> line is our constant scrim level, re-scaled to whoever&apos;s selected.
+        Long-run development on the <b style={{ color: 'var(--text)' }}>prognostic</b> scale: our performance as a <b>% of our own historical baseline</b> against the team you pick{cycleOpp ? <> (next official: <b style={{ color: 'var(--text)' }}>{cycleOpp}</b>{cycleDate ? ` ${cycleDate}` : ''})</> : ''}.
+        The bold <b style={{ color: '#c9a227' }}>100% line</b> is that baseline — every completed game against them <b>before July</b>, frozen. Anything <b style={{ color: '#3fb950' }}>over 100%</b> is improvement by definition — even if it&apos;s below our all-team average, we&apos;re now better than we&apos;ve historically been against that specific team. Pick a low-history opponent (say Cloud9) and the bar drops; a strong matchup (Dignitas) and it rises. The <b style={{ color: '#4c8bf5' }}>trend</b> line is our constant scrim level, re-scaled to whoever&apos;s selected.
       </p>
 
       {loading && <div className="loading-state">Loading goals…</div>}

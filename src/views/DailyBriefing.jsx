@@ -2,7 +2,7 @@ import { useMemo, useState, useEffect, useCallback } from 'react'
 import { supabase } from '../lib/supabaseClient.js'
 import { useSupabaseQuery, fetchAllRows } from '../lib/useSupabaseQuery.js'
 import { canonicalOpponentName } from '../lib/constants.js'
-import { prognosticPct, fmtPct, todayISO, addDaysISO } from '../lib/prognostic.js'
+import { prognosticPct, fmtPct, todayISO, addDaysISO, TRACK_START } from '../lib/prognostic.js'
 import DmGraph from '../components/DmGraph.jsx'
 import InfoTip from '../components/InfoTip.jsx'
 
@@ -172,7 +172,7 @@ function computeGoal(goal, lib, seriesById, games, prows, cycleOpp) {
 
   // --- Prognostic DM graph vs the upcoming opponent, over the prep week ------
   // PAR = our historical average on this metric vs the next official opponent.
-  const parGames = cycleOpp ? games.filter((g) => { const s = seriesById[g.grid_series_id]; return s && g.riot_enriched && g.game_duration_s >= MIN_REAL_GAME_S && canonicalOpponentName(s.opponent_name || '') === cycleOpp }) : []
+  const parGames = cycleOpp ? games.filter((g) => { const s = seriesById[g.grid_series_id]; return s && g.riot_enriched && g.game_duration_s >= MIN_REAL_GAME_S && s.series_date < TRACK_START && canonicalOpponentName(s.opponent_name || '') === cycleOpp }) : []
   const par = parGames.length ? metricValue(goal.metric_key, parGames, playersFor(new Set(parGames.map((g) => g.id)))) : null
   const today = todayISO()
   const pStart = goal.trend_start_date || (goal.cycle_official_date ? addDaysISO(goal.cycle_official_date, -6) : null)
@@ -373,7 +373,7 @@ function GoalRow({ goal, c, compact, opponent }) {
         </div>
         {c.dm && c.dm.latestPct != null && (
           <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
-            <div style={LBL_HELP} title={`Prognostic — our latest scrim day as a % of our historical par vs ${opponent || 'the opponent'}. 100% = at par; over 100% = improvement by definition.`}>vs {opponent || 'opp'} par</div>
+            <div style={LBL_HELP} title={`Prognostic — our latest scrim day as a % of our frozen before-July baseline vs ${opponent || 'the opponent'}. 100% = at that baseline; over 100% = improvement by definition.`}>vs {opponent || 'opp'} 100%</div>
             <div style={{ fontSize: 20, fontWeight: 800, color: c.dm.latestPct >= 100 ? '#3aa76d' : '#e0524a' }}>{fmtPct(c.dm.latestPct)}</div>
           </div>
         )}
@@ -632,7 +632,7 @@ export default function DailyBriefing() {
             </div>
             <p className="panel-caption" style={{ marginTop: 0 }}>
               Two reads per goal: <b>did it improve today</b> (latest scrim day vs the day before) and <b>is it up this week</b> (all prep-week
-              scrims combined vs the baseline we started from). The graph is the prognostic view — this week&apos;s scrims as a % of our historical par vs {cycleOpp}: the <b style={{ color: '#c9a227' }}>100% line</b> is that par, and anything <b style={{ color: '#3aa76d' }}>over 100%</b> means we&apos;re heading in better than we&apos;ve historically played them. The pills give the daily and running verdicts.
+              scrims combined vs the baseline we started from). The graph is the prognostic view — this week&apos;s scrims as a % of our frozen before-July baseline vs {cycleOpp}: the <b style={{ color: '#c9a227' }}>100% line</b> is that baseline, and anything <b style={{ color: '#3aa76d' }}>over 100%</b> means we&apos;re heading in better than we&apos;ve historically played them. The pills give the daily and running verdicts.
             </p>
             {teamComputed.length === 0 ? <div className="empty-state">No team goals active.</div> : (
               <div>{teamComputed.map(({ goal, c }) => <GoalRow key={goal.id} goal={goal} c={c} opponent={cycleOpp} />)}</div>

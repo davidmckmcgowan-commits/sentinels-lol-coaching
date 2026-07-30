@@ -8,6 +8,21 @@
 
 export const MIN_REAL_GAME_S = 900
 
+// Practice restarted 2026-07-07 after the June break. Everything BEFORE this is
+// the frozen baseline that sets the 100% prognostic line; this date onward is
+// the tracked period measured against it.
+export const TRACK_START = '2026-07-07'
+
+export const clampN = (x, lo, hi) => Math.max(lo, Math.min(hi, x))
+
+export function quantile(arr, q) {
+  const a = arr.filter((x) => x != null).slice().sort((x, y) => x - y)
+  if (!a.length) return null
+  if (a.length === 1) return a[0]
+  const pos = (a.length - 1) * q, b = Math.floor(pos), r = pos - b
+  return a[b + 1] !== undefined ? a[b] + r * (a[b + 1] - a[b]) : a[b]
+}
+
 // direction-aware, sign-safe: works for negative pars (gold diff) and for
 // lower-is-better metrics (give-back rate). Reduces to actual/par*100 for a
 // positive higher-is-better metric (e.g. 41 vs a par of 60 -> 68.3%).

@@ -3,7 +3,7 @@
 // Over 100 (green zone) is improvement by definition; under 100 (red) is below
 // our own history. C = best-fit trend of our % over time (solid to today,
 // dashed projection to game day). D = each individual game's %.
-import { daysBetween, rangeDates, wdOf, lsqFit, fmtPct } from '../lib/prognostic.js'
+import { daysBetween, rangeDates, wdOf, lsqFit, fmtPct, quantile, clampN } from '../lib/prognostic.js'
 
 const C_PAR = '#c9a227'    // the 100% par line — the bar to beat
 const C_TREND = '#4c8bf5'  // C — trend (best-fit direction)
@@ -24,14 +24,21 @@ export default function DmGraph({ start, end, today, dayData, gameData, showProj
   const todayNum = Math.max(0, Math.min(totalDays, daysBetween(start, today)))
   const W = 1000, H = compact ? 96 : 150
 
-  const vals = [...gd.map((g) => g.pct), ...dd.map((d) => d.pct), 100]
-  let min = Math.min(...vals), max = Math.max(...vals)
-  const pad = (max - min) * 0.16 || 20
-  min -= pad; max += pad
-  const y = (v) => H - ((v - min) / (max - min)) * H
+  // Clamp the visible band to the everyday range (5th–95th pct of values) so
+  // blowout days don't squash the movement. Always include 100%. Points beyond
+  // the band are pinned to the edge and ringed to flag them as off-scale.
+  const rawVals = [...gd.map((g) => g.pct), ...dd.map((d) => d.pct)]
+  let lo = quantile(rawVals, 0.05) ?? 0
+  let hi = quantile(rawVals, 0.95) ?? 200
+  lo = Math.min(lo, 100); hi = Math.max(hi, 100)
+  if (hi - lo < 20) { lo -= 10; hi += 10 }
+  const bpad = (hi - lo) * 0.12
+  lo -= bpad; hi += bpad
+  const isOff = (v) => v < lo || v > hi
+  const y = (v) => H - ((clampN(v, lo, hi) - lo) / (hi - lo)) * H
   const px = (dn) => (dn / totalDays) * W
   const pxDate = (d) => px(daysBetween(start, d))
-  const pctTop = (v) => (1 - (v - min) / (max - min)) * 100
+  const pctTop = (v) => (1 - (clampN(v, lo, hi) - lo) / (hi - lo)) * 100
   const pctLeft = (dn) => (dn / totalDays) * 100
   const dayWidth = W / totalDays
 
@@ -52,8 +59,8 @@ export default function DmGraph({ start, end, today, dayData, gameData, showProj
   })
   const gamePath = gPts.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${y(p.pct).toFixed(1)}`).join(' ')
 
-  const yTop = y(max), y100 = y(100), yBot = y(min)
-  const yticks = [min, (min + 100) / 2, 100, (100 + max) / 2, max]
+  const yTop = y(hi), y100 = y(100), yBot = y(lo)
+  const yticks = [lo, (lo + 100) / 2, 100, (100 + hi) / 2, hi]
   const dateList = rangeDates(start, end)
   const showEvery = dateList.length > 12 ? Math.ceil(dateList.length / 12) : 1
 
@@ -64,7 +71,7 @@ export default function DmGraph({ start, end, today, dayData, gameData, showProj
     <div>
       {!compact && (
         <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 11, marginBottom: 8, alignItems: 'center' }}>
-          <span style={leg}>{bar({ borderTop: `2px solid ${C_PAR}` })} 100% = par{parLabel ? ` (${parLabel})` : ''}</span>
+          <span style={leg}>{bar({ borderTop: `2px solid ${C_PAR}` })} 100% prognostic{parLabel ? ` (${parLabel})` : ''}</span>
           <span style={leg}>{bar({ borderTop: `3px solid ${C_TREND}` })} Trend</span>
           {showProjection && <span style={leg}>{bar({ borderTop: `2px dashed ${C_TREND}`, opacity: 0.8 })} projection</span>}
           <span style={leg}>{bar({ borderTop: `2px solid ${C_GAME}` })} Each game</span>
@@ -88,9 +95,9 @@ export default function DmGraph({ start, end, today, dayData, gameData, showProj
             <line x1="0" y1={y100} x2={W} y2={y100} stroke={C_PAR} strokeWidth="2" vectorEffect="non-scaling-stroke" />
             {/* D — each game */}
             <path d={gamePath} fill="none" stroke={C_GAME} strokeWidth="1.5" opacity="0.55" vectorEffect="non-scaling-stroke" />
-            {gPts.map((p, i) => <circle key={`g${i}`} cx={p.x} cy={y(p.pct)} r={2} fill={C_GAME} opacity="0.8" vectorEffect="non-scaling-stroke" />)}
+            {gPts.map((p, i) => <circle key={`g${i}`} cx={p.x} cy={y(p.pct)} r={2} fill={C_GAME} opacity="0.8" stroke={isOff(p.pct) ? '#e5e7eb' : 'none'} strokeWidth="1" vectorEffect="non-scaling-stroke" />)}
             {/* day markers */}
-            {dd.map((d, i) => <circle key={`d${i}`} cx={pxDate(d.date) + dayWidth * 0.3} cy={y(d.pct)} r={2.5} fill={C_TREND} opacity="0.5" vectorEffect="non-scaling-stroke" />)}
+            {dd.map((d, i) => <circle key={`d${i}`} cx={pxDate(d.date) + dayWidth * 0.3} cy={y(d.pct)} r={2.5} fill={C_TREND} opacity="0.5" stroke={isOff(d.pct) ? '#e5e7eb' : 'none'} strokeWidth="1" vectorEffect="non-scaling-stroke" />)}
             {/* C — trend + projection */}
             {solidPath && <path d={solidPath} fill="none" stroke={C_TREND} strokeWidth="2.5" vectorEffect="non-scaling-stroke" />}
             {projPath && <path d={projPath} fill="none" stroke={C_TREND} strokeWidth="2.5" strokeDasharray="7 5" opacity="0.85" vectorEffect="non-scaling-stroke" />}
