@@ -81,14 +81,17 @@ export default function OpponentStats() {
     return [...c.entries()].map(([name, n]) => ({ name, n })).sort((a, b) => b.n - a.n)
   }, [games, seriesById])
 
-  const [oppSel, setOppSel] = useState('')
-  const selected = oppSel || (opps[0]?.name ?? null)
+  const [oppSel, setOppSel] = useState('ALL')
+  const selected = oppSel || 'ALL'
+  const totalGames = useMemo(() => opps.reduce((a, o) => a + o.n, 0), [opps])
+  const oppLabel = selected === 'ALL' ? 'All teams' : selected
 
   const agg = useMemo(() => {
     if (!selected) return null
     const gs = (games || []).filter((g) => {
       const s = seriesById[g.grid_series_id]
-      return s && g.riot_enriched && g.game_duration_s >= MIN_REAL_S && canonicalOpponentName(s.opponent_name || '') === selected
+      if (!s || !g.riot_enriched || g.game_duration_s < MIN_REAL_S) return false
+      return selected === 'ALL' || canonicalOpponentName(s.opponent_name || '') === selected
     })
     if (!gs.length) return null
 
@@ -157,7 +160,7 @@ export default function OpponentStats() {
     <div className="panel">
       <h2>Opponent Stats</h2>
       <p className="panel-caption" style={{ marginTop: 0 }}>
-        Pick a team — every card shows Sentinels vs that opponent, side by side, averaged over the completed games we have on record against them.
+        Pick a team — or <b style={{ color: 'var(--text)' }}>All teams</b> for Sentinels vs the whole field — and every card shows us side by side with them, averaged over the completed games on record.
       </p>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 8 }}>
@@ -168,9 +171,10 @@ export default function OpponentStats() {
           className="search-input"
           style={{ minWidth: 240, fontSize: 14, padding: '8px 10px' }}
         >
+          <option value="ALL">All teams ({totalGames} games)</option>
           {opps.map((o) => <option key={o.name} value={o.name}>{o.name} ({o.n} games)</option>)}
         </select>
-        {agg && <span style={{ fontSize: 12, color: 'var(--text-faint)' }}>{agg.n} completed games vs {selected}</span>}
+        {agg && <span style={{ fontSize: 12, color: 'var(--text-faint)' }}>{agg.n} completed games {selected === 'ALL' ? 'across all teams' : `vs ${selected}`}</span>}
       </div>
 
       {gLoading && <div className="loading-state">Loading…</div>}
@@ -178,7 +182,7 @@ export default function OpponentStats() {
 
       {agg && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, marginTop: 6 }}>
-          {CARD_ORDER.map(([title, key]) => <Card key={key} title={title} rows={agg[key]} oppName={selected} />)}
+          {CARD_ORDER.map(([title, key]) => <Card key={key} title={title} rows={agg[key]} oppName={oppLabel} />)}
         </div>
       )}
     </div>
