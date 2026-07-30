@@ -13,10 +13,12 @@ import MatchHistory from './views/MatchHistory.jsx'
 import GoalsTracker from './views/GoalsTracker.jsx'
 import DailyBriefing from './views/DailyBriefing.jsx'
 import PlayerCompare from './views/PlayerCompare.jsx'
+import DraftWinConditions from './views/DraftWinConditions.jsx'
 
 const TABS = [
   { key: 'matchHistory', label: 'Match History' },
   { key: 'opponents', label: 'Opponent Stats' },
+  { key: 'draft', label: 'Draft' },
   { key: 'briefing', label: 'Daily Briefing' },
   { key: 'goals', label: 'Team Goals' },
   { key: 'individual', label: 'Individual' },
@@ -64,6 +66,7 @@ function App() {
         {activeTab === 'goals' && <GoalsTracker />}
         {activeTab === 'individual' && <PlayerCompare />}
         {activeTab === 'opponents' && <OpponentStats />}
+        {activeTab === 'draft' && <DraftWinConditions />}
         {activeTab === 'wellbeing' && <PlayerWellbeing />}
         {activeTab === 'correlation' && <CorrelationExplorer />}
         {activeTab === 'entry' && <DataEntry />}
