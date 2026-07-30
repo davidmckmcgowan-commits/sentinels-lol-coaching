@@ -184,10 +184,21 @@ function computeGoal(goal, lib, seriesById, games, prows, cycleOpp) {
       .sort((a, b) => a.date !== b.date ? a.date.localeCompare(b.date) : (a.g.game_number ?? 0) - (b.g.game_number ?? 0))
     const byDay = {}
     for (const it of inWin) (byDay[it.date] ??= []).push(it.g)
-    const dayData = Object.keys(byDay).sort().map((date) => { const dg = byDay[date]; return { date, pct: prognosticPct(metricValue(goal.metric_key, dg, playersFor(new Set(dg.map((g) => g.id)))), par, higher) } })
-    const gameData = inWin.map((it) => { const dg = byDay[it.date]; return { date: it.date, idxInDay: dg.indexOf(it.g), dayCount: dg.length, pct: prognosticPct(metricValue(goal.metric_key, [it.g], playersFor(new Set([it.g.id]))), par, higher) } })
+    const dpct = (p) => `${fmtPct(p)} (${p >= 100 ? '+' : ''}${Math.round(p - 100)}% vs 100)`
+    const dayData = Object.keys(byDay).sort().map((date) => {
+      const dg = byDay[date]
+      const raw = metricValue(goal.metric_key, dg, playersFor(new Set(dg.map((g) => g.id))))
+      const pct = prognosticPct(raw, par, higher)
+      return { date, pct, tip: pct == null ? null : `${date.slice(5)} · day avg ${dpct(pct)} · ${fmt(raw, unit)}` }
+    })
+    const gameData = inWin.map((it) => {
+      const dg = byDay[it.date]
+      const raw = metricValue(goal.metric_key, [it.g], playersFor(new Set([it.g.id])))
+      const pct = prognosticPct(raw, par, higher)
+      return { date: it.date, idxInDay: dg.indexOf(it.g), dayCount: dg.length, pct, tip: pct == null ? null : `${it.date.slice(5)} · ${dpct(pct)} · ${fmt(raw, unit)}` }
+    })
     const latestPct = [...dayData].reverse().find((d) => d.pct != null)?.pct ?? null
-    dm = { start: pStart, end: pEnd, today, dayData, gameData, par, parLabel: `${fmt(par, unit)} vs ${cycleOpp}`, latestPct }
+    dm = { start: pStart, end: pEnd, today, dayData, gameData, par, parLabel: `${fmt(par, unit)} vs ${cycleOpp}`, baselineTip: `100% line = ${fmt(par, unit)} vs ${cycleOpp} — every completed game before July (${parGames.length} games)`, latestPct }
   }
 
   return { meta, unit, higher, points, latest, prev, latestDate, prevDate, delta, wtd, baseline, target, onTrack, improving, dayState, weekState, weekDelta, remaining, met, prob, par, dm }
@@ -380,7 +391,7 @@ function GoalRow({ goal, c, compact, opponent }) {
       </div>
 
       {c.dm
-        ? <div style={{ marginTop: 8 }}><DmGraph start={c.dm.start} end={c.dm.end} today={c.dm.today} dayData={c.dm.dayData} gameData={c.dm.gameData} showProjection parLabel={c.dm.parLabel} compact /></div>
+        ? <div style={{ marginTop: 8 }}><DmGraph start={c.dm.start} end={c.dm.end} today={c.dm.today} dayData={c.dm.dayData} gameData={c.dm.gameData} showProjection parLabel={c.dm.parLabel} baselineTip={c.dm.baselineTip} compact /></div>
         : (
           <>
             <StandBar baseline={c.baseline} current={c.latest} target={c.target} higher={c.higher} onTrack={c.met} />

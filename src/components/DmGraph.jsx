@@ -12,7 +12,7 @@ const C_TODAY = '#e5534b'
 const C_UP = '#3fb950'
 const C_DOWN = '#e5534b'
 
-export default function DmGraph({ start, end, today, dayData, gameData, showProjection = false, parLabel, compact = false }) {
+export default function DmGraph({ start, end, today, dayData, gameData, showProjection = false, parLabel, baselineTip, compact = false }) {
   if (!start || !end) return <span style={{ color: 'var(--text-faint)', fontSize: 11 }}>No date window.</span>
   const dd = (dayData || []).filter((d) => d.pct != null)
   const gd = (gameData || []).filter((g) => g.pct != null)
@@ -60,7 +60,7 @@ export default function DmGraph({ start, end, today, dayData, gameData, showProj
   const gPts = gd.map((g) => {
     const base = pxDate(g.date)
     const frac = g.dayCount > 1 ? g.idxInDay / (g.dayCount - 1) : 0.5
-    return { x: base + frac * dayWidth * 0.6, pct: g.pct }
+    return { x: base + frac * dayWidth * 0.6, pct: g.pct, tip: g.tip }
   })
   const gamePath = gPts.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${y(p.pct).toFixed(1)}`).join(' ')
 
@@ -97,13 +97,24 @@ export default function DmGraph({ start, end, today, dayData, gameData, showProj
             <rect x="0" y={y100} width={W} height={Math.max(0, yBot - y100)} fill={C_DOWN} opacity="0.06" />
             {/* today marker */}
             <line x1={px(todayNum)} y1="0" x2={px(todayNum)} y2={H} stroke={C_TODAY} strokeWidth="1" strokeDasharray="3 4" opacity="0.55" vectorEffect="non-scaling-stroke" />
-            {/* 100% par line */}
+            {/* 100% par line (+ a wide transparent line so it's easy to hover) */}
             <line x1="0" y1={y100} x2={W} y2={y100} stroke={C_PAR} strokeWidth="2" vectorEffect="non-scaling-stroke" />
+            <line x1="0" y1={y100} x2={W} y2={y100} stroke="transparent" strokeWidth="14" style={{ cursor: 'help' }}>{baselineTip && <title>{baselineTip}</title>}</line>
             {/* D — each game */}
             <path d={gamePath} fill="none" stroke={C_GAME} strokeWidth="1.5" opacity="0.55" vectorEffect="non-scaling-stroke" />
-            {gPts.map((p, i) => <circle key={`g${i}`} cx={p.x} cy={y(p.pct)} r={2} fill={C_GAME} opacity="0.8" stroke={isOff(p.pct) ? '#e5e7eb' : 'none'} strokeWidth="1" vectorEffect="non-scaling-stroke" />)}
+            {gPts.map((p, i) => (
+              <g key={`g${i}`}>
+                <circle cx={p.x} cy={y(p.pct)} r={2} fill={C_GAME} opacity="0.8" stroke={isOff(p.pct) ? '#e5e7eb' : 'none'} strokeWidth="1" vectorEffect="non-scaling-stroke" />
+                <circle cx={p.x} cy={y(p.pct)} r={7} fill="transparent" style={{ cursor: 'help' }}>{p.tip && <title>{p.tip}</title>}</circle>
+              </g>
+            ))}
             {/* day markers */}
-            {dd.map((d, i) => <circle key={`d${i}`} cx={pxDate(d.date) + dayWidth * 0.3} cy={y(d.pct)} r={2.5} fill={C_TREND} opacity="0.5" stroke={isOff(d.pct) ? '#e5e7eb' : 'none'} strokeWidth="1" vectorEffect="non-scaling-stroke" />)}
+            {dd.map((d, i) => (
+              <g key={`d${i}`}>
+                <circle cx={pxDate(d.date) + dayWidth * 0.3} cy={y(d.pct)} r={2.5} fill={C_TREND} opacity="0.5" stroke={isOff(d.pct) ? '#e5e7eb' : 'none'} strokeWidth="1" vectorEffect="non-scaling-stroke" />
+                <circle cx={pxDate(d.date) + dayWidth * 0.3} cy={y(d.pct)} r={7} fill="transparent" style={{ cursor: 'help' }}>{d.tip && <title>{d.tip}</title>}</circle>
+              </g>
+            ))}
             {/* C — trend + projection */}
             {solidPath && <path d={solidPath} fill="none" stroke={C_TREND} strokeWidth="2.5" vectorEffect="non-scaling-stroke" />}
             {projPath && <path d={projPath} fill="none" stroke={C_TREND} strokeWidth="2.5" strokeDasharray="7 5" opacity="0.85" vectorEffect="non-scaling-stroke" />}

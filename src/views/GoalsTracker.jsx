@@ -100,11 +100,17 @@ function GoalCard({ goal, lib, series, games, prows, team }) {
 
     const byDay = {}
     for (const c of tracked) (byDay[c.date] ??= []).push(c)
+    const dpct = (p) => `${fmtPct(p)} (${p >= 100 ? '+' : ''}${Math.round(p - 100)}% vs 100)`
     const dayData = Object.keys(byDay).sort().map((date) => {
       const arr = byDay[date]
-      return { date, raw: arr.reduce((a, b) => a + b.raw, 0) / arr.length, pct: arr.reduce((a, b) => a + b.pct, 0) / arr.length }
+      const raw = arr.reduce((a, b) => a + b.raw, 0) / arr.length
+      const pct = arr.reduce((a, b) => a + b.pct, 0) / arr.length
+      return { date, raw, pct, tip: `${date.slice(5)} · day avg ${dpct(pct)}${team !== 'ALL' ? ` · ${fmt(raw, unit)}` : ''}` }
     })
-    const gameData = tracked.map((c) => { const dg = byDay[c.date]; return { date: c.date, idxInDay: dg.indexOf(c), dayCount: dg.length, pct: c.pct } })
+    const gameData = tracked.map((c) => {
+      const dg = byDay[c.date]
+      return { date: c.date, idxInDay: dg.indexOf(c), dayCount: dg.length, pct: c.pct, tip: `${team === 'ALL' ? c.opp + ' · ' : ''}${c.date.slice(5)} · ${dpct(c.pct)} · ${fmt(c.raw, unit)}` }
+    })
 
     const latest = dayData.length ? dayData[dayData.length - 1] : null
     return { selPar, dayData, gameData, latest, hasData: dayData.length > 0 }
@@ -115,6 +121,9 @@ function GoalCard({ goal, lib, series, games, prows, team }) {
   const teamLabel = team === 'ALL' ? 'all teams' : team
   const noBaseline = team !== 'ALL' && (!selPar || selPar.par == null)
   const parLabel = team === 'ALL' ? 'each game vs its own team' : (selPar && selPar.par != null ? `${fmt(selPar.par, unit)} vs ${team}` : null)
+  const baselineTip = team === 'ALL'
+    ? "100% line = each game measured against its own team's completed games before July"
+    : (selPar && selPar.par != null ? `100% line = ${fmt(selPar.par, unit)} vs ${team} — every completed game before July (${selPar.n} games)` : null)
 
   const verdict = latestPct == null ? { c: '#8a91a0', t: 'Waiting on July games to read against the 100% line.' }
     : latestPct >= 100
@@ -145,7 +154,7 @@ function GoalCard({ goal, lib, series, games, prows, team }) {
         ? <div style={{ fontSize: 12, color: 'var(--text-faint)' }}>No pre-July games vs {teamLabel} to set the 100% line yet.</div>
         : !hasData
           ? <div style={{ fontSize: 12, color: 'var(--text-faint)' }}>No games since July 1 vs {teamLabel} yet.</div>
-          : <DmGraph start={WIN_START} end={today} today={today} dayData={dayData} gameData={gameData} showProjection={false} parLabel={parLabel} />}
+          : <DmGraph start={WIN_START} end={today} today={today} dayData={dayData} gameData={gameData} showProjection={false} parLabel={parLabel} baselineTip={baselineTip} />}
     </div>
   )
 }
