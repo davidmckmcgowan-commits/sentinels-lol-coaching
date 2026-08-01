@@ -98,6 +98,8 @@ function buildCards(g, players) {
       { label: 'Gold / min', value: min ? Math.round(perMin(sGold)) : '—' },
       { label: 'Gold diff / min', value: min && op.length ? sg(perMin(sGold - oGold), 0) : '—' },
       { label: 'Gold diff @15', value: sg(g.gold_diff_15, 0) },
+      { label: 'Gold diff @23', value: g.gold_diff_23 != null ? sg(g.gold_diff_23, 0) : '—' },
+      { label: 'Gold Δ 15→23 (mid game)', value: (g.gold_diff_23 != null && g.gold_diff_15 != null) ? sg(g.gold_diff_23 - g.gold_diff_15, 0) : '—' },
       { label: 'CS / min', value: min ? num(perMin(sCs), 1) : '—' },
       { label: 'CS diff @15', value: sg(g.cs_diff_15, 1) },
       { label: 'First Tower', bool: g.first_tower_sentinels },
@@ -216,7 +218,7 @@ export default function MatchHistory() {
   const { data: games, loading: gLoading, refetch: refetchGames } = useSupabaseQuery(
     () => fetchAllRows(() => supabase.from('grid_games').select(
       'id, grid_series_id, game_number, sentinels_won, manual_won, excluded, patch, sentinels_side, sentinels_bans, opponent_bans, riot_enriched, ' +
-      'game_duration_s, gold_diff_15, cs_diff_15, first_blood_sentinels, first_tower_sentinels, ' +
+      'game_duration_s, gold_diff_15, cs_diff_15, gold_diff_23, sentinels_gold_at_23, opponent_gold_at_23, first_blood_sentinels, first_tower_sentinels, ' +
       'sentinels_dragons, opponent_dragons, sentinels_heralds, opponent_heralds, sentinels_grubs, opponent_grubs, ' +
       'sentinels_barons, opponent_barons, sentinels_towers, opponent_towers, ' +
       'sentinels_gold_at_15, opponent_gold_at_15, sentinels_cs_at_15, opponent_cs_at_15, ' +

@@ -53,7 +53,7 @@ export default function OpponentStats() {
   const { data: series } = useSupabaseQuery(() => supabase.from('grid_series').select('grid_series_id, opponent_name, series_type'), [])
   const { data: games, loading: gLoading } = useSupabaseQuery(
     () => fetchAllRows(() => supabase.from('grid_games').select(
-      'id, grid_series_id, sentinels_won, manual_won, excluded, riot_enriched, game_duration_s, gold_diff_15, cs_diff_15, ' +
+      'id, grid_series_id, sentinels_won, manual_won, excluded, riot_enriched, game_duration_s, gold_diff_15, cs_diff_15, gold_diff_23, ' +
       'first_blood_sentinels, first_tower_sentinels, sentinels_dragons, opponent_dragons, sentinels_heralds, opponent_heralds, ' +
       'sentinels_grubs, opponent_grubs, sentinels_barons, opponent_barons, sentinels_towers, opponent_towers, sentinels_kills, opponent_kills'
     )), []
@@ -123,6 +123,8 @@ export default function OpponentStats() {
     const usKDA = mean(usD) ? (mean(usK) + mean(usA)) / mean(usD) : null
     const thKDA = mean(thD) ? (mean(thK) + mean(thA)) / mean(thD) : null
     const csD = avgG((g) => g.cs_diff_15), goldD = avgG((g) => g.gold_diff_15), xpD = mean(xpDiff)
+    const gold23 = avgG((g) => g.gold_diff_23)
+    const midSwing = mean(gs.map((g) => (g.gold_diff_23 != null && g.gold_diff_15 != null) ? g.gold_diff_23 - g.gold_diff_15 : null).filter((x) => x != null))
 
     return {
       n: recordGames.length,
@@ -142,6 +144,9 @@ export default function OpponentStats() {
       ],
       economy: [
         { label: 'Gold / min', us: fmt(mean(usGpm), '0'), them: fmt(mean(thGpm), '0') },
+        { label: 'Gold diff @15', us: fmt(goldD, 'sg0'), them: fmt(goldD != null ? -goldD : null, 'sg0') },
+        { label: 'Gold diff @23', us: fmt(gold23, 'sg0'), them: fmt(gold23 != null ? -gold23 : null, 'sg0') },
+        { label: 'Gold Δ 15→23 (mid game)', us: fmt(midSwing, 'sg0'), them: fmt(midSwing != null ? -midSwing : null, 'sg0') },
         { label: 'CS / min', us: fmt(mean(usCpm), '1'), them: fmt(mean(thCpm), '1') },
         { label: 'First Tower', us: fmt(rate((g) => g.first_tower_sentinels), 'pct'), them: fmt(rate((g) => (g.first_tower_sentinels == null ? null : !g.first_tower_sentinels)), 'pct') },
         { label: 'Towers / game', us: fmt(avgG((g) => g.sentinels_towers), '1'), them: fmt(avgG((g) => g.opponent_towers), '1') },
