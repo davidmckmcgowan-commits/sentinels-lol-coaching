@@ -11,6 +11,9 @@ const DDRAGON = 'https://ddragon.leagueoflegends.com'
 const ROLE_ORDER = ['TOP', 'JUNGLE', 'MIDDLE', 'BOTTOM', 'UTILITY']
 const SESSION_COLORS = { Green: '#3fb950', Orange: '#d29922', Red: '#e5534b', Official: '#c9a227' }
 const norm = (s) => (s ?? '').toLowerCase().replace(/[^a-z0-9]/g, '')
+// GRID gives each series a scheduled start; show it in the team's local time
+// (matches GRID's Time column, e.g. 18:17).
+const fmtTime = (iso) => { if (!iso) return '—'; try { return new Date(iso).toLocaleTimeString('en-GB', { timeZone: 'America/Los_Angeles', hour: '2-digit', minute: '2-digit', hour12: false }) } catch { return '—' } }
 
 function useChampions() {
   const [maps, setMaps] = useState({ ver: null, idToKey: {}, nameToKey: {} })
@@ -207,7 +210,7 @@ export default function MatchHistory() {
   })
 
   const { data: series, loading: sLoading } = useSupabaseQuery(
-    () => supabase.from('grid_series').select('grid_series_id, series_date, opponent_name, series_type'),
+    () => supabase.from('grid_series').select('grid_series_id, series_date, start_time_scheduled, opponent_name, series_type'),
     []
   )
   const { data: games, loading: gLoading, refetch: refetchGames } = useSupabaseQuery(
@@ -268,6 +271,8 @@ export default function MatchHistory() {
       out.push({
         gameId: g.id,
         date: s.series_date,
+        time: fmtTime(s.start_time_scheduled),
+        ts: s.start_time_scheduled || '',
         gameNumber: g.game_number,
         tournament: s.series_type === 'ESPORTS' ? 'Official' : 'Scrim',
         sessionType: stype,
@@ -283,10 +288,7 @@ export default function MatchHistory() {
         raw: g,
       })
     }
-    out.sort((a, b) => {
-      if (a.date !== b.date) return (b.date || '').localeCompare(a.date || '')
-      return (b.gameNumber ?? 0) - (a.gameNumber ?? 0)
-    })
+    out.sort((a, b) => (b.ts || '').localeCompare(a.ts || '') || (b.date || '').localeCompare(a.date || '') || (b.gameNumber ?? 0) - (a.gameNumber ?? 0))
     return out
   }, [games, series, seriesById, sessionColorMap])
 
@@ -355,6 +357,7 @@ export default function MatchHistory() {
             <thead>
               <tr>
                 <th style={th}>Date</th>
+                <th style={th}>Time</th>
                 <th style={th}>Tournament</th>
                 <th style={th}>Patch</th>
                 <th style={th}>W/L</th>
@@ -376,6 +379,7 @@ export default function MatchHistory() {
                   <Fragment key={r.gameId}>
                   <tr onClick={() => toggleOpen(r.gameId)} title="Click for per-game stats" style={{ borderTop: '1px solid var(--border, #2b2b33)', cursor: 'pointer', background: open ? '#141821' : undefined }}>
                     <td style={td}><span style={{ color: 'var(--text-faint)', marginRight: 6 }}>{open ? '▾' : '▸'}</span>{r.date}</td>
+                    <td style={{ ...td, color: 'var(--text-faint)' }}>{r.time}</td>
                     <td style={td}>
                       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
                         <span style={{ width: 9, height: 9, borderRadius: '50%', background: r.color || '#555', display: 'inline-block' }} />
@@ -416,7 +420,7 @@ export default function MatchHistory() {
                   </tr>
                   {open && (
                     <tr>
-                      <td colSpan={11} style={{ padding: '2px 10px 14px', background: '#141821' }}>
+                      <td colSpan={12} style={{ padding: '2px 10px 14px', background: '#141821' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '8px 2px', borderBottom: '1px solid var(--border, #2b2b33)' }}>
                           <span style={{ fontSize: 12, color: 'var(--text-faint)' }}>Result:</span>
                           {[['Win', true], ['Loss', false], ['Clear', null]].map(([lbl, val]) => {
