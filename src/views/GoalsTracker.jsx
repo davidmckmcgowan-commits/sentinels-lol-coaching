@@ -68,7 +68,7 @@ function GoalCard({ goal, lib, series, games, prows, team }) {
   const model = useMemo(() => {
     const completed = games.map((g) => {
       const s = series[g.grid_series_id]
-      if (!s || !g.riot_enriched || g.game_duration_s < MIN_REAL_GAME_S) return null
+      if (!s || g.excluded || !g.riot_enriched || g.game_duration_s < MIN_REAL_GAME_S) return null
       return { g, date: s.series_date, opp: canonicalOpponentName(s.opponent_name || '') }
     }).filter(Boolean)
 
@@ -169,7 +169,7 @@ export default function GoalsTracker() {
   )
   const { data: gameRows } = useSupabaseQuery(
     () => fetchAllRows(() => supabase.from('grid_games').select(
-      'id, grid_series_id, game_number, riot_enriched, game_duration_s, gold_diff_15, cs_diff_15, first_tower_sentinels, sentinels_dragons, opponent_dragons, sentinels_grubs, positive_plays, give_backs, snowballs'
+      'id, grid_series_id, game_number, riot_enriched, game_duration_s, excluded, gold_diff_15, cs_diff_15, first_tower_sentinels, sentinels_dragons, opponent_dragons, sentinels_grubs, positive_plays, give_backs, snowballs'
     )), []
   )
   const { data: playerRows } = useSupabaseQuery(

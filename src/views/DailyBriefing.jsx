@@ -130,7 +130,7 @@ function computeGoal(goal, lib, seriesById, games, prows, cycleOpp) {
     ? prows.filter((p) => p.player !== 'Huhi' && idSet.has(p.game_id))
     : goal.scope === 'player' ? prows.filter((p) => p.player === goal.player && idSet.has(p.game_id)) : []
 
-  const enriched = games.filter((g) => { const s = seriesById[g.grid_series_id]; return s && s.series_type === 'SCRIM' && g.riot_enriched && g.game_duration_s >= MIN_REAL_GAME_S })
+  const enriched = games.filter((g) => { const s = seriesById[g.grid_series_id]; return s && !g.excluded && s.series_type === 'SCRIM' && g.riot_enriched && g.game_duration_s >= MIN_REAL_GAME_S })
   const dates = [...new Set(enriched.map((g) => seriesById[g.grid_series_id].series_date))].sort().slice(-WINDOW_DAYS)
 
   const points = dates.map((date) => {
@@ -172,7 +172,7 @@ function computeGoal(goal, lib, seriesById, games, prows, cycleOpp) {
 
   // --- Prognostic DM graph vs the upcoming opponent, over the prep week ------
   // PAR = our historical average on this metric vs the next official opponent.
-  const parGames = cycleOpp ? games.filter((g) => { const s = seriesById[g.grid_series_id]; return s && g.riot_enriched && g.game_duration_s >= MIN_REAL_GAME_S && s.series_date < TRACK_START && canonicalOpponentName(s.opponent_name || '') === cycleOpp }) : []
+  const parGames = cycleOpp ? games.filter((g) => { const s = seriesById[g.grid_series_id]; return s && !g.excluded && g.riot_enriched && g.game_duration_s >= MIN_REAL_GAME_S && s.series_date < TRACK_START && canonicalOpponentName(s.opponent_name || '') === cycleOpp }) : []
   const par = parGames.length ? metricValue(goal.metric_key, parGames, playersFor(new Set(parGames.map((g) => g.id)))) : null
   const today = todayISO()
   const pStart = goal.trend_start_date || (goal.cycle_official_date ? addDaysISO(goal.cycle_official_date, -6) : null)
@@ -180,7 +180,7 @@ function computeGoal(goal, lib, seriesById, games, prows, cycleOpp) {
   let dm = null
   if (par != null && pStart && pEnd) {
     const capEnd = today < pEnd ? today : pEnd
-    const inWin = games.map((g) => { const s = seriesById[g.grid_series_id]; if (!s || s.series_type !== 'SCRIM' || !g.riot_enriched || g.game_duration_s < MIN_REAL_GAME_S) return null; if (s.series_date < pStart || s.series_date > capEnd) return null; return { g, date: s.series_date } }).filter(Boolean)
+    const inWin = games.map((g) => { const s = seriesById[g.grid_series_id]; if (!s || g.excluded || s.series_type !== 'SCRIM' || !g.riot_enriched || g.game_duration_s < MIN_REAL_GAME_S) return null; if (s.series_date < pStart || s.series_date > capEnd) return null; return { g, date: s.series_date } }).filter(Boolean)
       .sort((a, b) => a.date !== b.date ? a.date.localeCompare(b.date) : (a.g.game_number ?? 0) - (b.g.game_number ?? 0))
     const byDay = {}
     for (const it of inWin) (byDay[it.date] ??= []).push(it.g)
@@ -456,7 +456,7 @@ export default function DailyBriefing() {
   const { data: seriesRows, refetch: refetchSeries } = useSupabaseQuery(() => supabase.from('grid_series').select('grid_series_id, series_date, series_type, opponent_name'), [])
   const { data: gameRows, refetch: refetchGames } = useSupabaseQuery(
     () => fetchAllRows(() => supabase.from('grid_games').select(
-      'id, grid_series_id, game_number, sentinels_won, riot_enriched, game_duration_s, gold_diff_15, cs_diff_15, first_blood_sentinels, first_tower_sentinels, sentinels_dragons, opponent_dragons, sentinels_heralds, sentinels_grubs, positive_plays, give_backs, snowballs'
+      'id, grid_series_id, game_number, sentinels_won, manual_won, excluded, riot_enriched, game_duration_s, gold_diff_15, cs_diff_15, first_blood_sentinels, first_tower_sentinels, sentinels_dragons, opponent_dragons, sentinels_heralds, sentinels_grubs, positive_plays, give_backs, snowballs'
     )), []
   )
   const { data: playerRows, refetch: refetchPlayers } = useSupabaseQuery(
@@ -501,12 +501,14 @@ export default function DailyBriefing() {
     const scrim = { w: 0, l: 0 }, official = { w: 0, l: 0 }
     for (const g of games) {
       const s = seriesById[g.grid_series_id]
-      if (!s || g.sentinels_won == null) continue
+      if (!s || g.excluded) continue
+      const won = g.manual_won ?? g.sentinels_won
+      if (won == null) continue
       if (!cycleOpp || canonicalOpponentName(s.opponent_name || '') !== cycleOpp) continue
-      if (!(g.game_duration_s >= MIN_REAL_GAME_S)) continue
+      if (!((g.riot_enriched && g.game_duration_s >= MIN_REAL_GAME_S) || g.manual_won != null)) continue
       const b = s.series_type === 'ESPORTS' ? official : s.series_type === 'SCRIM' ? scrim : null
       if (!b) continue
-      if (g.sentinels_won) b.w++; else b.l++
+      if (won) b.w++; else b.l++
     }
     const wr = (b) => { const n = b.w + b.l; return n ? Math.round((b.w / n) * 100) : null }
     return {
@@ -535,8 +537,8 @@ export default function DailyBriefing() {
   // win conditions vs opponent (data-derived top 3, with coach override)
   const derivedConds = useMemo(() => {
     if (!cycleOpp) return []
-    const oppGames = games.filter((g) => { const s = seriesById[g.grid_series_id]; return s && g.riot_enriched && g.sentinels_won != null && g.game_duration_s >= MIN_REAL_GAME_S && canonicalOpponentName(s.opponent_name || '') === cycleOpp })
-    const pool = oppGames.length >= 6 ? oppGames : games.filter((g) => g.riot_enriched && g.sentinels_won != null && g.game_duration_s >= MIN_REAL_GAME_S)
+    const oppGames = games.filter((g) => { const s = seriesById[g.grid_series_id]; return s && !g.excluded && g.riot_enriched && g.sentinels_won != null && g.game_duration_s >= MIN_REAL_GAME_S && canonicalOpponentName(s.opponent_name || '') === cycleOpp })
+    const pool = oppGames.length >= 6 ? oppGames : games.filter((g) => !g.excluded && g.riot_enriched && g.sentinels_won != null && g.game_duration_s >= MIN_REAL_GAME_S)
     const scored = WIN_CONDS.map((wc) => ({ label: wc.label, lift: conditionLift(pool, wc.test) })).filter((x) => x.lift != null)
     scored.sort((a, b) => b.lift - a.lift)
     return { top: scored.slice(0, 3), fromOpp: oppGames.length >= 6, n: pool.length }

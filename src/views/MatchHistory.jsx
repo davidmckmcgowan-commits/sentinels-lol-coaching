@@ -210,9 +210,9 @@ export default function MatchHistory() {
     () => supabase.from('grid_series').select('grid_series_id, series_date, opponent_name, series_type'),
     []
   )
-  const { data: games, loading: gLoading } = useSupabaseQuery(
+  const { data: games, loading: gLoading, refetch: refetchGames } = useSupabaseQuery(
     () => fetchAllRows(() => supabase.from('grid_games').select(
-      'id, grid_series_id, game_number, sentinels_won, patch, sentinels_side, sentinels_bans, opponent_bans, riot_enriched, ' +
+      'id, grid_series_id, game_number, sentinels_won, manual_won, excluded, patch, sentinels_side, sentinels_bans, opponent_bans, riot_enriched, ' +
       'game_duration_s, gold_diff_15, cs_diff_15, first_blood_sentinels, first_tower_sentinels, ' +
       'sentinels_dragons, opponent_dragons, sentinels_heralds, opponent_heralds, sentinels_grubs, opponent_grubs, ' +
       'sentinels_barons, opponent_barons, sentinels_towers, opponent_towers, ' +
@@ -261,7 +261,7 @@ export default function MatchHistory() {
     const out = []
     for (const g of games) {
       const s = seriesById[g.grid_series_id]
-      if (!s) continue
+      if (!s || g.excluded) continue
       const canon = canonicalOpponentName(s.opponent_name || '')
       const official = s.series_type === 'ESPORTS'
       const stype = official ? 'Official' : (sessionColorMap[`${s.series_date}|${canon}`] || null)
@@ -273,7 +273,8 @@ export default function MatchHistory() {
         sessionType: stype,
         color: stype ? SESSION_COLORS[stype] : null,
         patch: g.patch,
-        won: g.sentinels_won,
+        won: g.manual_won ?? g.sentinels_won,
+        manualWon: g.manual_won,
         side: g.sentinels_side,
         opponent: canon,
         ourBans: g.sentinels_bans || [],
@@ -319,6 +320,16 @@ export default function MatchHistory() {
       .filter((p) => p.is_sentinels === sentinels)
       .sort((a, b) => ROLE_ORDER.indexOf(a.team_position) - ROLE_ORDER.indexOf(b.team_position))
 
+  async function setResult(gameId, val) {
+    await supabase.from('grid_games').update({ manual_won: val }).eq('id', gameId)
+    refetchGames()
+  }
+  async function deleteGame(gameId) {
+    if (!window.confirm('Delete this game? It will be hidden from every page and skipped by future syncs.')) return
+    await supabase.from('grid_games').update({ excluded: true }).eq('id', gameId)
+    refetchGames()
+  }
+
   const loading = sLoading || gLoading
   const th = { padding: '8px 10px', textAlign: 'left', fontSize: 11, letterSpacing: '.04em', color: 'var(--text-faint)', textTransform: 'uppercase', whiteSpace: 'nowrap' }
   const td = { padding: '7px 10px', fontSize: 13, verticalAlign: 'middle', whiteSpace: 'nowrap' }
@@ -331,6 +342,7 @@ export default function MatchHistory() {
       <p className="panel-caption">
         Every game newest-first — scrims and officials. Tournament colour is your session
         classification (Green / Orange / Red), Officials in gold. Bans and picks pulled from the draft.
+        Click a game to open it — you can set the <b>result</b> by hand (for games where the enemy left and GRID never called a winner) or <b>delete</b> a game there.
       </p>
 
       {loading && <div className="loading-state">Loading match history…</div>}
@@ -405,6 +417,27 @@ export default function MatchHistory() {
                   {open && (
                     <tr>
                       <td colSpan={11} style={{ padding: '2px 10px 14px', background: '#141821' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '8px 2px', borderBottom: '1px solid var(--border, #2b2b33)' }}>
+                          <span style={{ fontSize: 12, color: 'var(--text-faint)' }}>Result:</span>
+                          {[['Win', true], ['Loss', false], ['Clear', null]].map(([lbl, val]) => {
+                            const isActive = val === null ? r.manualWon == null : r.manualWon === val
+                            return (
+                              <button key={lbl} type="button" onClick={(e) => { e.stopPropagation(); setResult(r.gameId, val) }}
+                                style={{ padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', fontWeight: 700,
+                                  border: '1px solid var(--border, #2b2b33)',
+                                  background: isActive ? (val === true ? '#12351f' : val === false ? '#3a1d1d' : '#26262e') : 'transparent',
+                                  color: val === true ? '#3fb950' : val === false ? '#e5534b' : 'var(--text-faint)' }}>
+                                {lbl}
+                              </button>
+                            )
+                          })}
+                          {r.manualWon != null && <span style={{ fontSize: 11, color: '#c9a227' }}>manual result</span>}
+                          {!r.enriched && <span style={{ fontSize: 11, color: 'var(--text-faint)' }}>· no GRID end-game (enemy left?) — set the result by hand</span>}
+                          <button type="button" onClick={(e) => { e.stopPropagation(); deleteGame(r.gameId) }}
+                            style={{ marginLeft: 'auto', padding: '4px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer', fontWeight: 700, border: '1px solid #5a2b2b', background: 'transparent', color: '#e5534b' }}>
+                            Delete game
+                          </button>
+                        </div>
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, padding: '6px 2px' }}>
                           {CARD_DEFS.map((c) => (
                             <label key={c.key} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text)', cursor: 'pointer' }}>

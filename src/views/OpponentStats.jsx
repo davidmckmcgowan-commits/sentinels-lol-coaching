@@ -53,7 +53,7 @@ export default function OpponentStats() {
   const { data: series } = useSupabaseQuery(() => supabase.from('grid_series').select('grid_series_id, opponent_name, series_type'), [])
   const { data: games, loading: gLoading } = useSupabaseQuery(
     () => fetchAllRows(() => supabase.from('grid_games').select(
-      'id, grid_series_id, sentinels_won, riot_enriched, game_duration_s, gold_diff_15, cs_diff_15, ' +
+      'id, grid_series_id, sentinels_won, manual_won, excluded, riot_enriched, game_duration_s, gold_diff_15, cs_diff_15, ' +
       'first_blood_sentinels, first_tower_sentinels, sentinels_dragons, opponent_dragons, sentinels_heralds, opponent_heralds, ' +
       'sentinels_grubs, opponent_grubs, sentinels_barons, opponent_barons, sentinels_towers, opponent_towers, sentinels_kills, opponent_kills'
     )), []
@@ -88,16 +88,22 @@ export default function OpponentStats() {
 
   const agg = useMemo(() => {
     if (!selected) return null
-    const gs = (games || []).filter((g) => {
+    const inScope = (games || []).filter((g) => {
       const s = seriesById[g.grid_series_id]
-      if (!s || !g.riot_enriched || g.game_duration_s < MIN_REAL_S) return false
+      if (!s || g.excluded) return false
       return selected === 'ALL' || canonicalOpponentName(s.opponent_name || '') === selected
     })
-    if (!gs.length) return null
+    const gs = inScope.filter((g) => g.riot_enriched && g.game_duration_s >= MIN_REAL_S)
+    // Record counts every real game — including enemy-left games the coach
+    // resulted by hand — using the manual result when set, else GRID's.
+    const wonOf = (g) => g.manual_won ?? g.sentinels_won
+    const recordGames = inScope.filter((g) => (g.riot_enriched && g.game_duration_s >= MIN_REAL_S) || g.manual_won != null)
+    let usW = 0, usL = 0
+    for (const g of recordGames) { const w = wonOf(g); if (w === true) usW++; else if (w === false) usL++ }
+    if (!gs.length && !recordGames.length) return null
 
     const usGpm = [], usCpm = [], usDpm = [], thGpm = [], thCpm = [], thDpm = []
     const usK = [], usD = [], usA = [], thK = [], thD = [], thA = [], xpDiff = []
-    let usW = 0, usL = 0
     for (const g of gs) {
       const pl = playersByGame[g.id] || []
       const sp = pl.filter((p) => p.is_sentinels), op = pl.filter((p) => !p.is_sentinels)
@@ -106,7 +112,6 @@ export default function OpponentStats() {
         usGpm.push(sum(sp, (p) => p.gold_earned) / min); usCpm.push(sum(sp, (p) => p.cs) / min); usDpm.push(sum(sp, (p) => p.champ_damage) / min)
         if (op.length) { thGpm.push(sum(op, (p) => p.gold_earned) / min); thCpm.push(sum(op, (p) => p.cs) / min); thDpm.push(sum(op, (p) => p.champ_damage) / min) }
       }
-      if (g.sentinels_won === true) usW++; else if (g.sentinels_won === false) usL++
       if (g.sentinels_kills != null) { usK.push(g.sentinels_kills); thD.push(g.sentinels_kills) }
       if (g.opponent_kills != null) { usD.push(g.opponent_kills); thK.push(g.opponent_kills) }
       usA.push(sum(sp, (p) => p.assists)); thA.push(sum(op, (p) => p.assists))
@@ -120,7 +125,7 @@ export default function OpponentStats() {
     const csD = avgG((g) => g.cs_diff_15), goldD = avgG((g) => g.gold_diff_15), xpD = mean(xpDiff)
 
     return {
-      n: gs.length,
+      n: recordGames.length,
       general: [
         { label: 'Record', us: `${usW}-${usL}`, them: `${usL}-${usW}` },
         { label: 'Win rate', us: fmt(pctOf(usW, usW + usL), 'pct'), them: fmt(pctOf(usL, usW + usL), 'pct') },
