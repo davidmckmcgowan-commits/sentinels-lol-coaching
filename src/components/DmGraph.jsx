@@ -12,7 +12,7 @@ const C_TODAY = '#e5534b'
 const C_UP = '#3fb950'
 const C_DOWN = '#e5534b'
 
-export default function DmGraph({ start, end, today, dayData, gameData, showProjection = false, parLabel, baselineTip, compact = false }) {
+export default function DmGraph({ start, end, today, dayData, gameData, showProjection = false, parLabel, baselineTip, compact = false, delta = false }) {
   if (!start || !end) return <span style={{ color: 'var(--text-faint)', fontSize: 11 }}>No date window.</span>
   const dd = (dayData || []).filter((d) => d.pct != null)
   const gd = (gameData || []).filter((g) => g.pct != null)
@@ -76,18 +76,18 @@ export default function DmGraph({ start, end, today, dayData, gameData, showProj
     <div>
       {!compact && (
         <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 11, marginBottom: 8, alignItems: 'center' }}>
-          <span style={leg}>{bar({ borderTop: `2px solid ${C_PAR}` })} 100% prognostic{parLabel ? ` (${parLabel})` : ''}</span>
+          <span style={leg}>{bar({ borderTop: `2px solid ${C_PAR}` })} {delta ? 'baseline (0)' : '100% prognostic'}{parLabel ? ` (${parLabel})` : ''}</span>
           <span style={leg}>{bar({ borderTop: `3px solid ${C_TREND}` })} Trend</span>
           {showProjection && <span style={leg}>{bar({ borderTop: `2px dashed ${C_TREND}`, opacity: 0.8 })} projection</span>}
           <span style={leg}>{bar({ borderTop: `2px solid ${C_GAME}` })} Each game</span>
-          <span style={{ color: C_UP }}>▲ over 100 = improving</span>
+          <span style={{ color: C_UP }}>▲ {delta ? 'above 0' : 'over 100'} = improving</span>
         </div>
       )}
       <div style={{ display: 'flex', alignItems: 'flex-start' }}>
         {/* y-axis — fixed to the chart height H so the ticks line up with the lines */}
         <div style={{ position: 'relative', width: 42, height: H, flex: '0 0 auto' }}>
           {yticks.map((v, i) => (
-            <span key={i} style={{ position: 'absolute', right: 5, top: `${pctTop(v)}%`, transform: 'translateY(-50%)', fontSize: 10, color: Math.round(v) === 100 ? C_PAR : 'var(--text-faint)', fontWeight: Math.round(v) === 100 ? 700 : 400 }}>{Math.round(v)}%</span>
+            <span key={i} style={{ position: 'absolute', right: 5, top: `${pctTop(v)}%`, transform: 'translateY(-50%)', fontSize: 10, color: Math.round(v) === 100 ? C_PAR : 'var(--text-faint)', fontWeight: Math.round(v) === 100 ? 700 : 400 }}>{Math.round(v) === 100 ? (delta ? '0' : '100%') : (delta ? `${v - 100 > 0 ? '+' : ''}${Math.round(v - 100)}%` : `${Math.round(v)}%`)}</span>
           ))}
         </div>
         <div style={{ position: 'relative', flex: 1 }}>

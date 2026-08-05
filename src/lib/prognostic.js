@@ -8,10 +8,9 @@
 
 export const MIN_REAL_GAME_S = 900
 
-// Practice restarted 2026-07-07 after the June break. Everything BEFORE this is
-// the frozen baseline that sets the 100% prognostic line; this date onward is
-// the tracked period measured against it.
-export const TRACK_START = '2026-07-07'
+// Everything BEFORE July is the frozen baseline that sets the 100% prognostic
+// line; from the start of July onward is the tracked period shown on the graph.
+export const TRACK_START = '2026-07-01'
 
 export const clampN = (x, lo, hi) => Math.max(lo, Math.min(hi, x))
 
@@ -35,6 +34,16 @@ export function prognosticPct(actual, par, higher = true) {
 }
 
 export const fmtPct = (v) => (v == null ? '—' : `${Math.round(v)}%`)
+
+// Improvement over our own baseline: 0 = at par (no change), + = better, − = worse.
+// This is prognosticPct − 100, computed so nulls propagate. Use this wherever the
+// label says "improvement"; use prognosticPct where the label says "% of baseline".
+export function improvementPct(actual, par, higher = true) {
+  const p = prognosticPct(actual, par, higher)
+  return p == null ? null : p - 100
+}
+// Format an improvement delta: leading + for gains, native − for declines, 0% flat.
+export const fmtImp = (v) => (v == null ? '—' : `${v > 0 ? '+' : ''}${Math.round(v)}%`)
 
 // ---- date helpers (calendar days, TZ-safe via UTC noon) --------------------
 export const parseISO = (s) => new Date(s + 'T12:00:00Z')

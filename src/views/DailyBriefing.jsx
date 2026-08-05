@@ -391,7 +391,7 @@ function GoalRow({ goal, c, compact, opponent }) {
       </div>
 
       {c.dm
-        ? <div style={{ marginTop: 8 }}><DmGraph start={c.dm.start} end={c.dm.end} today={c.dm.today} dayData={c.dm.dayData} gameData={c.dm.gameData} showProjection parLabel={c.dm.parLabel} baselineTip={c.dm.baselineTip} compact /></div>
+        ? <div style={{ marginTop: 8 }}><DmGraph start={c.dm.start} end={c.dm.end} today={c.dm.today} dayData={c.dm.dayData} gameData={c.dm.gameData} showProjection parLabel={c.dm.parLabel} baselineTip={c.dm.baselineTip} compact={compact} /></div>
         : (
           <>
             <StandBar baseline={c.baseline} current={c.latest} target={c.target} higher={c.higher} onTrack={c.met} />

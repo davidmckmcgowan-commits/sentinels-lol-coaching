@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { supabase } from '../lib/supabaseClient.js'
 import { useSupabaseQuery, fetchAllRows } from '../lib/useSupabaseQuery.js'
 import { canonicalOpponentName } from '../lib/constants.js'
-import { MIN_REAL_GAME_S, prognosticPct, fmtPct, todayISO, TRACK_START } from '../lib/prognostic.js'
+import { MIN_REAL_GAME_S, prognosticPct, fmtImp, todayISO, TRACK_START } from '../lib/prognostic.js'
 import DmGraph from '../components/DmGraph.jsx'
 
 // Team Goals runs on the constant PROGNOSTIC line: our performance as a % of
@@ -100,24 +100,32 @@ function GoalCard({ goal, lib, series, games, prows, team }) {
 
     const byDay = {}
     for (const c of tracked) (byDay[c.date] ??= []).push(c)
-    const dpct = (p) => `${fmtPct(p)} (${p >= 100 ? '+' : ''}${Math.round(p - 100)}% vs 100)`
+    const dImp = (p) => `${fmtImp(p - 100)} vs baseline`
     const dayData = Object.keys(byDay).sort().map((date) => {
       const arr = byDay[date]
       const raw = arr.reduce((a, b) => a + b.raw, 0) / arr.length
       const pct = arr.reduce((a, b) => a + b.pct, 0) / arr.length
-      return { date, raw, pct, tip: `${date.slice(5)} · day avg ${dpct(pct)}${team !== 'ALL' ? ` · ${fmt(raw, unit)}` : ''}` }
+      return { date, raw, pct, tip: `${date.slice(5)} · day avg ${dImp(pct)}${team !== 'ALL' ? ` · ${fmt(raw, unit)}` : ''}` }
     })
     const gameData = tracked.map((c) => {
       const dg = byDay[c.date]
-      return { date: c.date, idxInDay: dg.indexOf(c), dayCount: dg.length, pct: c.pct, tip: `${team === 'ALL' ? c.opp + ' · ' : ''}${c.date.slice(5)} · ${dpct(c.pct)} · ${fmt(c.raw, unit)}` }
+      return { date: c.date, idxInDay: dg.indexOf(c), dayCount: dg.length, pct: c.pct, tip: `${team === 'ALL' ? c.opp + ' · ' : ''}${c.date.slice(5)} · ${dImp(c.pct)} · ${fmt(c.raw, unit)}` }
     })
 
+    // Per-opponent split — which teams drove the net number (All-teams view).
+    const oppMap = {}
+    for (const c of tracked) (oppMap[c.opp] ??= []).push(c.pct)
+    const byOpp = Object.entries(oppMap)
+      .map(([opp, arr]) => ({ opp, imp: arr.reduce((a, b) => a + b, 0) / arr.length - 100, n: arr.length }))
+      .sort((a, b) => b.imp - a.imp)
+
     const latest = dayData.length ? dayData[dayData.length - 1] : null
-    return { selPar, dayData, gameData, latest, hasData: dayData.length > 0 }
+    return { selPar, dayData, gameData, byOpp, latest, hasData: dayData.length > 0 }
   }, [games, series, prows, goal, team, higher, today])
 
-  const { selPar, dayData, gameData, latest, hasData } = model
+  const { selPar, dayData, gameData, byOpp, latest, hasData } = model
   const latestPct = latest?.pct
+  const impNow = latestPct == null ? null : latestPct - 100
   const teamLabel = team === 'ALL' ? 'all teams' : team
   const noBaseline = team !== 'ALL' && (!selPar || selPar.par == null)
   const parLabel = team === 'ALL' ? 'each game vs its own team' : (selPar && selPar.par != null ? `${fmt(selPar.par, unit)} vs ${team}` : null)
@@ -125,10 +133,10 @@ function GoalCard({ goal, lib, series, games, prows, team }) {
     ? "100% line = each game measured against its own team's completed games before July"
     : (selPar && selPar.par != null ? `100% line = ${fmt(selPar.par, unit)} vs ${team} — every completed game before July (${selPar.n} games)` : null)
 
-  const verdict = latestPct == null ? { c: '#8a91a0', t: 'Waiting on July games to read against the 100% line.' }
+  const verdict = latestPct == null ? { c: '#8a91a0', t: 'Waiting on July games to read against the baseline.' }
     : latestPct >= 100
-      ? { c: '#3fb950', t: team === 'ALL' ? `Above the 100% line — ${fmtPct(latestPct)} across all teams since July.` : `Above our ${team} 100% line — ${fmtPct(latestPct)} (${fmt(latest.raw, unit)} vs a ${fmt(selPar.par, unit)} baseline).` }
-      : { c: '#e5534b', t: team === 'ALL' ? `Below the 100% line — ${fmtPct(latestPct)} across all teams since July.` : `Below our ${team} 100% line — ${fmtPct(latestPct)} (${fmt(latest.raw, unit)} vs a ${fmt(selPar.par, unit)} baseline).` }
+      ? { c: '#3fb950', t: team === 'ALL' ? `${fmtImp(impNow)} on our baseline across all teams since July.` : `${fmtImp(impNow)} on our ${team} baseline — ${fmt(latest.raw, unit)} vs ${fmt(selPar.par, unit)}.` }
+      : { c: '#e5534b', t: team === 'ALL' ? `${fmtImp(impNow)} on our baseline across all teams since July — slipped below.` : `${fmtImp(impNow)} on our ${team} baseline — ${fmt(latest.raw, unit)} vs ${fmt(selPar.par, unit)}.` }
 
   return (
     <div style={{ border: '1px solid var(--border, #2b2b33)', borderRadius: 10, padding: 14, background: 'var(--panel-2, #17171d)' }}>
@@ -139,9 +147,9 @@ function GoalCard({ goal, lib, series, games, prows, team }) {
           <div style={{ fontSize: 11, color: 'var(--text-faint)', fontStyle: 'italic' }}>Measures: {meta.description || meta.label || goal.metric_key}</div>
         </div>
         <div style={{ textAlign: 'right' }}>
-          <div style={LBL}>Now vs {teamLabel}</div>
-          <div style={{ fontSize: 28, fontWeight: 800, lineHeight: 1.1, color: verdict.c }}>{fmtPct(latestPct)}</div>
-          {team !== 'ALL' && selPar && selPar.par != null && <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>100% = {fmt(selPar.par, unit)} · {selPar.n} games</div>}
+          <div style={LBL}>Improvement vs {teamLabel}</div>
+          <div style={{ fontSize: 28, fontWeight: 800, lineHeight: 1.1, color: verdict.c }}>{fmtImp(impNow)}</div>
+          {team !== 'ALL' && selPar && selPar.par != null && <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>0 = {fmt(selPar.par, unit)} baseline · {selPar.n} games</div>}
           {team === 'ALL' && <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>each game vs its own team&apos;s baseline</div>}
         </div>
       </div>
@@ -151,10 +159,28 @@ function GoalCard({ goal, lib, series, games, prows, team }) {
       </div>
 
       {noBaseline
-        ? <div style={{ fontSize: 12, color: 'var(--text-faint)' }}>No pre-July games vs {teamLabel} to set the 100% line yet.</div>
+        ? <div style={{ fontSize: 12, color: 'var(--text-faint)' }}>No pre-July games vs {teamLabel} to set the baseline yet.</div>
         : !hasData
           ? <div style={{ fontSize: 12, color: 'var(--text-faint)' }}>No games since July 1 vs {teamLabel} yet.</div>
-          : <DmGraph start={WIN_START} end={today} today={today} dayData={dayData} gameData={gameData} showProjection={false} parLabel={parLabel} baselineTip={baselineTip} />}
+          : <DmGraph start={WIN_START} end={today} today={today} dayData={dayData} gameData={gameData} showProjection={false} parLabel={parLabel} baselineTip={baselineTip} delta />}
+
+      {team === 'ALL' && hasData && byOpp.length > 1 && (
+        <div style={{ marginTop: 12, borderTop: '1px solid var(--border, #2b2b33)', paddingTop: 10 }}>
+          <div style={{ ...LBL, marginBottom: 7 }}>Who drove it — improvement by opponent</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {byOpp.map((o) => {
+              const up = o.imp >= 0
+              return (
+                <span key={o.opp} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '4px 11px', borderRadius: 20, background: 'var(--panel, #10131a)', border: `1px solid ${up ? 'rgba(63,185,80,.4)' : 'rgba(229,83,75,.4)'}`, fontSize: 12 }}>
+                  <b>{o.opp}</b>
+                  <span style={{ color: up ? '#3fb950' : '#e5534b', fontWeight: 700 }}>{fmtImp(o.imp)}</span>
+                  <span style={{ color: 'var(--text-faint)' }}>{o.n}g</span>
+                </span>
+              )
+            })}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -236,8 +262,8 @@ export default function GoalsTracker() {
         </div>
       </div>
       <p className="panel-caption">
-        Long-run development on the <b style={{ color: 'var(--text)' }}>prognostic</b> scale: our performance as a <b>% of our own historical baseline</b> against the team you pick{cycleOpp ? <> (next official: <b style={{ color: 'var(--text)' }}>{cycleOpp}</b>{cycleDate ? ` ${cycleDate}` : ''})</> : ''}.
-        The bold <b style={{ color: '#c9a227' }}>100% line</b> is that baseline — every completed game against them <b>before July</b>, frozen. Anything <b style={{ color: '#3fb950' }}>over 100%</b> is improvement by definition — even if it&apos;s below our all-team average, we&apos;re now better than we&apos;ve historically been against that specific team. Pick a low-history opponent (say Cloud9) and the bar drops; a strong matchup (Dignitas) and it rises. The <b style={{ color: '#4c8bf5' }}>trend</b> and dots are only our games against that team, from July 1 onward — no pre-July history is plotted.
+        Long-run development on the <b style={{ color: 'var(--text)' }}>prognostic</b> scale: our <b>improvement over our own historical baseline</b> against the team you pick{cycleOpp ? <> (next official: <b style={{ color: 'var(--text)' }}>{cycleOpp}</b>{cycleDate ? ` ${cycleDate}` : ''})</> : ''}.
+        The bold <b style={{ color: '#c9a227' }}>baseline line (0)</b> is that mark — every completed game against them <b>before July</b>, frozen. Anything <b style={{ color: '#3fb950' }}>above 0</b> is improvement by definition — even if it&apos;s below our all-team average, we&apos;re now better than we&apos;ve historically been against that specific team. Pick a low-history opponent (say Cloud9) and the bar drops; a strong matchup (Dignitas) and it rises. The <b style={{ color: '#4c8bf5' }}>trend</b> and dots are only our games against that team, from July 1 onward — no pre-July history is plotted.
       </p>
 
       {loading && <div className="loading-state">Loading goals…</div>}
