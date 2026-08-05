@@ -175,7 +175,11 @@ function computeGoal(goal, lib, seriesById, games, prows, cycleOpp) {
   const parGames = cycleOpp ? games.filter((g) => { const s = seriesById[g.grid_series_id]; return s && !g.excluded && g.riot_enriched && g.game_duration_s >= MIN_REAL_GAME_S && s.series_date < TRACK_START && canonicalOpponentName(s.opponent_name || '') === cycleOpp }) : []
   const par = parGames.length ? metricValue(goal.metric_key, parGames, playersFor(new Set(parGames.map((g) => g.id)))) : null
   const today = todayISO()
-  const pStart = goal.trend_start_date || (goal.cycle_official_date ? addDaysISO(goal.cycle_official_date, -6) : null)
+  // Graph window = the continuous tracked period since TRACK_START, matching the
+  // Team Goals tab. The prep week alone is empty until that week's scrims land,
+  // while the card's own stats use the last N scrim days that exist — so a
+  // calendar-week graph went blank while the numbers above it were populated.
+  const pStart = TRACK_START
   const pEnd = goal.trend_end_date || goal.cycle_official_date || null
   let dm = null
   if (par != null && pStart && pEnd) {
@@ -645,7 +649,7 @@ export default function DailyBriefing() {
             </div>
             <p className="panel-caption" style={{ marginTop: 0 }}>
               Two reads per goal: <b>did it improve today</b> (latest scrim day vs the day before) and <b>is it up this week</b> (all prep-week
-              scrims combined vs the baseline we started from). The graph is the prognostic view — this week&apos;s scrims as a % of our frozen before-July baseline vs {cycleOpp}: the <b style={{ color: '#c9a227' }}>100% line</b> is that baseline, and anything <b style={{ color: '#3aa76d' }}>over 100%</b> means we&apos;re heading in better than we&apos;ve historically played them. The pills give the daily and running verdicts.
+              scrims combined vs the baseline we started from). The graph is the prognostic view — every scrim since 1 July as a % of our frozen before-July baseline vs {cycleOpp}: the <b style={{ color: '#c9a227' }}>100% line</b> is that baseline, and anything <b style={{ color: '#3aa76d' }}>over 100%</b> means we&apos;re heading in better than we&apos;ve historically played them. The pills give the daily and running verdicts.
             </p>
             {teamComputed.length === 0 ? <div className="empty-state">No team goals active.</div> : (
               <div>{teamComputed.map(({ goal, c }) => <GoalRow key={goal.id} goal={goal} c={c} opponent={cycleOpp} />)}</div>
